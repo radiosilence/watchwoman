@@ -12,7 +12,7 @@ fn obj(entries: &[(&str, Value)]) -> Value {
 
 #[test]
 fn query_with_suffix_matches_expected_files() {
-    let Ok(h) = Harness::spawn() else { return };
+    let h = Harness::spawn().expect("spawn daemon");
     let scratch = Scratch::new().unwrap();
     scratch.write("src/main.rs", b"fn main() {}").unwrap();
     scratch.write("README.md", b"# hi").unwrap();
@@ -52,7 +52,7 @@ fn query_with_suffix_matches_expected_files() {
 
 #[test]
 fn query_match_glob_excludes_other_suffixes() {
-    let Ok(h) = Harness::spawn() else { return };
+    let h = Harness::spawn().expect("spawn daemon");
     let scratch = Scratch::new().unwrap();
     scratch.write("a.txt", b"").unwrap();
     scratch.write("b.md", b"").unwrap();

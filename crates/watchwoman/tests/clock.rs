@@ -3,7 +3,7 @@ use watchwoman_tests::{Harness, Scratch};
 
 #[test]
 fn clock_monotonic_under_writes() {
-    let Ok(h) = Harness::spawn() else { return };
+    let h = Harness::spawn().expect("spawn daemon");
     let scratch = Scratch::new().unwrap();
     let mut c = h.client().unwrap();
 

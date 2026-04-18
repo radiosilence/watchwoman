@@ -12,6 +12,12 @@ description.workspace = true
 name = "watchwoman"
 path = "src/main.rs"
 
+# Drop-in alias.  Same source, different argv[0] — every tool that
+# expects `watchman` on `$PATH` resolves to us instead.
+[[bin]]
+name = "watchman"
+path = "src/main.rs"
+
 [dependencies]
 watchwoman-protocol.workspace = true
 anyhow.workspace = true
@@ -23,6 +29,7 @@ tokio-util.workspace = true
 futures.workspace = true
 bytes.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 notify.workspace = true
 ignore.workspace = true
 globset.workspace = true
@@ -33,4 +40,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 directories.workspace = true
 nix.workspace = true
+indexmap = { version = "2", features = ["serde"] }
+
+[dev-dependencies]
+watchwoman-tests = { path = "../watchwoman-tests" }
 indexmap = { version = "2", features = ["serde"] }

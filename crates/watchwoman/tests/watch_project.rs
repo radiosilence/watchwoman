@@ -3,10 +3,7 @@ use watchwoman_tests::{Harness, Scratch};
 
 #[test]
 fn watch_project_returns_root() {
-    let Ok(h) = Harness::spawn() else {
-        eprintln!("skipping: harness unavailable");
-        return;
-    };
+    let h = Harness::spawn().expect("spawn daemon");
     let scratch = Scratch::new().unwrap();
     let mut c = h.client().unwrap();
 
@@ -23,7 +20,7 @@ fn watch_project_returns_root() {
 
 #[test]
 fn watch_list_contains_roots() {
-    let Ok(h) = Harness::spawn() else { return };
+    let h = Harness::spawn().expect("spawn daemon");
     let scratch = Scratch::new().unwrap();
     let mut c = h.client().unwrap();
 
@@ -50,7 +47,7 @@ fn watch_list_contains_roots() {
 
 #[test]
 fn watch_del_removes_root() {
-    let Ok(h) = Harness::spawn() else { return };
+    let h = Harness::spawn().expect("spawn daemon");
     let scratch = Scratch::new().unwrap();
     let mut c = h.client().unwrap();
 

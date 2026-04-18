@@ -12,7 +12,7 @@ fn obj(entries: &[(&str, Value)]) -> Value {
 
 #[test]
 fn state_enter_and_leave_round_trip() {
-    let Ok(h) = Harness::spawn() else { return };
+    let h = Harness::spawn().expect("spawn daemon");
     let scratch = Scratch::new().unwrap();
     let mut c = h.client().unwrap();
     let root = Value::String(scratch.path().to_string_lossy().into());

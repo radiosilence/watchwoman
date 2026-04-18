@@ -30,11 +30,14 @@ impl TargetBinary {
     pub fn resolve(&self) -> anyhow::Result<PathBuf> {
         match self {
             TargetBinary::Watchwoman => {
-                // Cargo sets this env var for tests so we don't need to
-                // shell out to `which` and risk hitting a stale install.
-                let p = std::env::var_os("CARGO_BIN_EXE_watchwoman")
-                    .context("CARGO_BIN_EXE_watchwoman not set; run under `cargo test`")?;
-                Ok(PathBuf::from(p))
+                // `CARGO_BIN_EXE_watchwoman` is only set for integration
+                // tests inside the same package as the binary; our tests
+                // live in a sibling crate, so we fall back to locating
+                // the binary in the workspace target dir.
+                if let Some(p) = std::env::var_os("CARGO_BIN_EXE_watchwoman") {
+                    return Ok(PathBuf::from(p));
+                }
+                locate_in_target("watchwoman")
             }
             TargetBinary::Watchman => which("watchman"),
             TargetBinary::Explicit(p) => Ok(p.clone()),
@@ -51,6 +54,26 @@ fn which(bin: &str) -> anyhow::Result<PathBuf> {
         }
     }
     bail!("{bin} not found on $PATH")
+}
+
+fn locate_in_target(bin: &str) -> anyhow::Result<PathBuf> {
+    // Walk up from this crate's manifest dir looking for `target/<profile>/<bin>`.
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").context("no CARGO_MANIFEST_DIR")?;
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let mut cur: &Path = Path::new(&manifest_dir);
+    loop {
+        let candidate = cur.join("target").join(profile).join(bin);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+        let Some(parent) = cur.parent() else { break };
+        cur = parent;
+    }
+    bail!("{bin} not found in any target/{profile} directory above {manifest_dir}")
 }
 
 /// One daemon + one state dir, torn down when dropped.

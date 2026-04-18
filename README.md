@@ -18,12 +18,39 @@ doesn't.
 
 ## Install
 
+### Homebrew
+
 ```sh
-cargo install --path crates/watchwoman
-ln -sf "$(which watchwoman)" "$(dirname "$(which watchwoman)")/watchman"
+brew install radiosilence/watchwoman/watchwoman
 ```
 
-The binary dispatches on `argv[0]`, so either name works.
+Installs both `watchwoman` and `watchman` (drop-in alias).
+
+### mise
+
+```sh
+mise use -g "cargo:watchwoman@latest"
+```
+
+### cargo
+
+```sh
+cargo install --git https://github.com/radiosilence/watchwoman \
+  --bin watchwoman --bin watchman
+```
+
+### Shell completions
+
+```sh
+watchwoman completion zsh  > ~/.zsh/completions/_watchwoman
+watchwoman completion bash > /etc/bash_completion.d/watchwoman
+watchwoman completion fish > ~/.config/fish/completions/watchwoman.fish
+```
+
+### Drop-in replacement
+
+Swapping an existing watchman install: see
+[`docs/REPLACING_WATCHMAN.md`](./docs/REPLACING_WATCHMAN.md).
 
 ## Development
 
