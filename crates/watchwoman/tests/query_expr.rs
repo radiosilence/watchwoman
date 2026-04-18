@@ -33,14 +33,9 @@ fn query_with_suffix_matches_expected_files() {
         .and_then(Value::as_array)
         .expect("no files");
 
-    let names: Vec<&str> = files
-        .iter()
-        .filter_map(|f| {
-            f.as_object()
-                .and_then(|o| o.get("name"))
-                .and_then(Value::as_str)
-        })
-        .collect();
+    // `fields:["name"]` degenerates to a flat array of strings —
+    // matches upstream watchman's documented shortcut.
+    let names: Vec<&str> = files.iter().filter_map(Value::as_str).collect();
     for expected in ["src/main.rs", "crates/foo/lib.rs"] {
         assert!(names.contains(&expected), "missing {expected} in {names:?}");
     }
@@ -77,13 +72,8 @@ fn query_match_glob_excludes_other_suffixes() {
         .and_then(Value::as_array)
         .expect("no files");
 
-    let names: Vec<&str> = files
-        .iter()
-        .filter_map(|f| {
-            f.as_object()
-                .and_then(|o| o.get("name"))
-                .and_then(Value::as_str)
-        })
-        .collect();
+    // `fields:["name"]` degenerates to a flat array of strings —
+    // matches upstream watchman's documented shortcut.
+    let names: Vec<&str> = files.iter().filter_map(Value::as_str).collect();
     assert_eq!(names, vec!["b.md"], "unexpected match set: {names:?}");
 }

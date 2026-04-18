@@ -78,6 +78,10 @@ pub struct Root {
     /// Directory the daemon persists per-root state into (triggers).
     /// `None` means "no durability" (tests, ephemeral daemons).
     state_dir: Option<PathBuf>,
+    /// `ignore_dirs` from the root's `.watchmanconfig`.  Path
+    /// components matching any of these (exact basename) are skipped
+    /// in both the initial scan and subsequent fs events.
+    pub ignore_dirs: Vec<String>,
     root_number_pool: Arc<AtomicU64>,
     subscriptions: RwLock<HashMap<String, SubscriptionSpec>>,
     triggers: RwLock<HashMap<String, Trigger>>,
@@ -95,6 +99,7 @@ impl Root {
         root_number_pool: Arc<AtomicU64>,
         watcher_cmd_tx: mpsc::UnboundedSender<WatcherCommand>,
         state_dir: Option<PathBuf>,
+        ignore_dirs: Vec<String>,
     ) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         Self {
@@ -106,6 +111,7 @@ impl Root {
             tick_tx: tx,
             watcher_cmd_tx,
             state_dir,
+            ignore_dirs,
             root_number_pool,
             subscriptions: RwLock::new(HashMap::new()),
             triggers: RwLock::new(HashMap::new()),

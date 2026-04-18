@@ -65,18 +65,20 @@ impl DaemonState {
         let root_counter = Arc::new(AtomicU64::new(root_number));
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<WatcherCommand>();
         let state_dir = self.sock_path.parent().map(|p| p.to_path_buf());
+        let ignore_dirs = watcher::load_watchman_config_ignores(&path);
         let root = Arc::new(Root::new(
             path.clone(),
             root_number,
             root_counter,
             cmd_tx,
             state_dir,
+            ignore_dirs.clone(),
         ));
 
         // Seed the tree synchronously so the first query from the caller
         // sees a populated root — otherwise tools that watch-and-query in
         // the same breath (jest, metro, hg) race the initial scan.
-        let entries = watcher::initial_scan(&path);
+        let entries = watcher::initial_scan(&path, &ignore_dirs);
         root.seed(entries);
 
         // Rehydrate durable triggers from the last run and restart

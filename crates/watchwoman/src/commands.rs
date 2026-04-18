@@ -36,15 +36,28 @@ pub enum CommandError {
 pub type CommandResult = Result<Value, CommandError>;
 
 /// Entry point invoked for every PDU the server reads.
+///
+/// Every response object — success or error — gets a `"version"` key
+/// injected at the top level.  Watchman clients (jest, pywatchman,
+/// hg fsmonitor) check this and log a warning or outright refuse to
+/// proceed without it.
 pub fn dispatch(state: &Arc<DaemonState>, session: &Session, pdu: Value) -> Value {
-    match dispatch_inner(state, session, pdu) {
+    let mut response = match dispatch_inner(state, session, pdu) {
         Ok(v) => v,
         Err(e) => {
             let mut m = IndexMap::new();
             m.insert("error".to_owned(), Value::String(format!("{e:#}")));
             Value::Object(m)
         }
+    };
+    if let Value::Object(map) = &mut response {
+        // Insert at front-ish so tools that look at the first key see version.
+        if !map.contains_key("version") {
+            let compat = Value::String(crate::WATCHMAN_COMPAT_VERSION.to_owned());
+            map.shift_insert(0, "version".to_owned(), compat);
+        }
     }
+    response
 }
 
 fn dispatch_inner(state: &Arc<DaemonState>, session: &Session, pdu: Value) -> CommandResult {
@@ -87,6 +100,26 @@ fn dispatch_inner(state: &Arc<DaemonState>, session: &Session, pdu: Value) -> Co
         "debug-ageout" => debug::ageout(state, args),
         "debug-show-cursors" => debug::show_cursors(state, args),
         "debug-poll-for-settle" => Ok(obj([("collected", Value::Bool(true))])),
+        "debug-get-asserted-states" => debug::get_asserted_states(state, args),
+        "debug-get-subscriptions" => debug::get_subscriptions(state, args),
+        "debug-root-status" => debug::root_status(state, args),
+        "debug-status" => debug::status(state),
+        "debug-watcher-info" => debug::watcher_info(state, args),
+        "debug-watcher-info-clear" => Ok(obj([("cleared", Value::Bool(true))])),
+        "debug-set-parallel-crawl" => Ok(obj([("parallel_crawl_enabled", Value::Bool(true))])),
+        "debug-set-subscriptions-paused" => Ok(obj([("paused", Value::Bool(false))])),
+        "debug-contenthash" => debug::contenthash(state, args),
+        "debug-symlink-target-cache" => Ok(obj([("entries", Value::Array(vec![]))])),
+        "debug-fsevents-inject-drop" => Ok(obj([("injected", Value::Bool(false))])),
+        "debug-kqueue-and-fsevents-recrawl" => debug::recrawl(state, args),
+        "debug-drop-privs" => Err(CommandError::BadArgs(
+            "debug-drop-privs is refused by design — watchwoman doesn't run as root".into(),
+        )),
+        "debug-poison" => Err(CommandError::BadArgs(
+            "debug-poison is refused — use `shutdown-server` instead".into(),
+        )),
+        "get-log" => info::get_log(),
+        "global-log-level" => info::log_level(args),
         "shutdown-server" => {
             state.request_shutdown();
             let mut m = IndexMap::new();

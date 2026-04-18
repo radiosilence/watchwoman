@@ -6,11 +6,10 @@
 //! "recrawl" noise.  Batching at 5 ms matches watchman's default
 //! settle period well enough for CLI tools.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ignore::WalkBuilder;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 
@@ -87,7 +86,7 @@ fn collect_event(root: &Root, event: notify::Result<Event>, out: &mut Vec<PathCh
         if rel.as_os_str().is_empty() {
             continue;
         }
-        if should_ignore(&rel) {
+        if should_ignore(&rel, &root.ignore_dirs) {
             continue;
         }
         match event.kind {
@@ -117,65 +116,106 @@ fn collect_event(root: &Root, event: notify::Result<Event>, out: &mut Vec<PathCh
     }
 }
 
-pub(crate) fn initial_scan(root: &PathBuf) -> Vec<(PathBuf, std::fs::Metadata, Option<String>)> {
-    // `ignore` integration is opt-in per watchman semantics — it surfaces
-    // every file by default.  Tools that want gitignore filtering do so at
-    // query time, not at scan time.  We only prune the obvious VCS /
-    // build dirs via [`should_ignore`] below.
-    let walker = WalkBuilder::new(root)
-        .follow_links(false)
-        .hidden(false)
-        .git_ignore(false)
-        .git_exclude(false)
-        .git_global(false)
-        .ignore(false)
-        .parents(false)
-        .build();
+pub(crate) fn initial_scan(
+    root: &Path,
+    ignore: &[String],
+) -> Vec<(PathBuf, std::fs::Metadata, Option<String>)> {
+    // Manual recursive walk so we can prune at the directory level —
+    // descending into `node_modules` before filtering was dominating
+    // the initial scan on any large JS project.
     let mut out = Vec::new();
-    for entry in walker.flatten() {
+    walk(root, Path::new(""), ignore, &mut out, false);
+    out
+}
+
+/// `shallow` is true once we've descended into a VCS directory
+/// (`.git`/`.hg`/`.svn`).  Matches real watchman's behaviour: the
+/// VCS dir itself and its immediate contents are reported, but we
+/// don't recurse deeper into them.  `ignore_dirs` from
+/// `.watchmanconfig` is applied at every depth and prunes the
+/// subtree entirely.
+fn walk(
+    abs_dir: &std::path::Path,
+    rel_dir: &std::path::Path,
+    ignore: &[String],
+    out: &mut Vec<(PathBuf, std::fs::Metadata, Option<String>)>,
+    shallow: bool,
+) {
+    let Ok(read) = std::fs::read_dir(abs_dir) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let rel = rel_dir.join(&name);
+        if ignore.iter().any(|d| d == name_str.as_ref()) {
+            continue;
+        }
         let abs = entry.path();
-        let Some(rel) = abs.strip_prefix(root).ok().map(PathBuf::from) else {
-            continue;
-        };
-        if rel.as_os_str().is_empty() {
-            continue;
-        }
-        if should_ignore(&rel) {
-            continue;
-        }
-        let Ok(metadata) = std::fs::symlink_metadata(abs) else {
+        let Ok(metadata) = std::fs::symlink_metadata(&abs) else {
             continue;
         };
         let symlink_target = if metadata.is_symlink() {
-            std::fs::read_link(abs)
+            std::fs::read_link(&abs)
                 .ok()
                 .map(|p| p.to_string_lossy().into_owned())
         } else {
             None
         };
-        out.push((rel, metadata, symlink_target));
+        let is_real_dir = metadata.is_dir() && !metadata.file_type().is_symlink();
+        let is_vcs = IGNORE_VCS.contains(&name_str.as_ref());
+        out.push((rel.clone(), metadata, symlink_target));
+        if is_real_dir && !shallow {
+            walk(&abs, &rel, ignore, out, is_vcs);
+        }
     }
-    out
 }
 
-fn should_ignore(rel: &std::path::Path) -> bool {
-    // Mirror watchman's `ignore_dirs` default plus common VCS / build
-    // output — saves millions of unnecessary entries on big trees.
-    for component in rel.components() {
-        let s = component.as_os_str().to_string_lossy();
-        matches!(
-            s.as_ref(),
-            ".git" | ".hg" | ".svn" | "node_modules" | "target" | ".direnv" | ".venv"
-        )
-        .then_some(())
-        .map(|_| true)
-        .unwrap_or(false);
-        if matches!(
-            s.as_ref(),
-            ".git" | ".hg" | ".svn" | "node_modules" | "target"
-        ) {
+/// VCS directory names whose immediate contents are reported but
+/// whose subdirectories are not recursed into.  Matches upstream
+/// watchman's behaviour for `.git` etc: you see `.git/HEAD` and
+/// `.git/hooks` but not `.git/hooks/pre-commit.sample`.
+const IGNORE_VCS: &[&str] = &[".git", ".hg", ".svn"];
+
+/// Used by the fs-event code path: `extra` is `ignore_dirs` from
+/// `.watchmanconfig`.  The initial scan does the VCS-shallow thing
+/// inside [`walk`] directly; for ad-hoc events we fall back to
+/// this coarse check.
+fn should_ignore(rel: &std::path::Path, extra: &[String]) -> bool {
+    let comps: Vec<_> = rel.components().collect();
+    for (i, comp) in comps.iter().enumerate() {
+        let s = comp.as_os_str().to_string_lossy();
+        if IGNORE_VCS.contains(&s.as_ref()) {
+            // Include `.git` itself and its direct children; skip
+            // anything deeper.
+            return i + 2 < comps.len();
+        }
+        if extra.iter().any(|d| d == s.as_ref()) {
             return true;
         }
     }
     false
+}
+
+pub(crate) fn load_watchman_config_ignores(root: &std::path::Path) -> Vec<String> {
+    let path = root.join(".watchmanconfig");
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Vec::new();
+    };
+    let parsed: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(?e, path = ?path, "ignoring malformed .watchmanconfig");
+            return Vec::new();
+        }
+    };
+    parsed
+        .get("ignore_dirs")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }

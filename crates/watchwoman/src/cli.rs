@@ -16,9 +16,9 @@ use crate::sock;
     name = "watchwoman",
     version,
     about = "A drop-in watchman replacement that doesn't eat your RAM.",
-    long_about = "watchwoman speaks the watchman wire protocol and CLI. Drop a \
-                  `watchman` symlink next to the binary and every tool that \
-                  expects watchman will talk to us instead."
+    long_about = "Speaks the watchman wire protocol and CLI. Installed as \
+                  both `watchwoman` and `watchman` — every tool that expects \
+                  watchman resolves to us without any further setup."
 )]
 pub struct Cli {
     /// Path to the unix socket.  Falls back to $WATCHMAN_SOCK, then a

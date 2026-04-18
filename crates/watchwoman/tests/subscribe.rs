@@ -46,11 +46,8 @@ fn subscribe_emits_changes() {
             .and_then(Value::as_array)
         {
             for f in files {
-                if let Some(name) = f
-                    .as_object()
-                    .and_then(|o| o.get("name"))
-                    .and_then(Value::as_str)
-                {
+                // `fields:["name"]` returns bare strings per watchman's shortcut.
+                if let Some(name) = f.as_str() {
                     if name == "new.txt" {
                         got_name = true;
                         break;

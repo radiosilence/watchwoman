@@ -69,7 +69,7 @@ pub fn parse_spec(raw: &Value) -> Result<QuerySpec, CommandError> {
         always_include_directories: map
             .get("always_include_directories")
             .and_then(Value::as_bool)
-            .unwrap_or(false),
+            .unwrap_or_else(always_include_dirs_default),
         dedup_results: map
             .get("dedup_results")
             .and_then(Value::as_bool)
@@ -83,6 +83,14 @@ pub fn parse_spec(raw: &Value) -> Result<QuerySpec, CommandError> {
             .and_then(Value::as_bool)
             .unwrap_or(true),
     })
+}
+
+/// Watchman's default includes directories in results.  The docs say
+/// `always_include_directories: false` is the default, but in
+/// practice the upstream daemon emits them for compat with tools
+/// that walk the result set as a directory snapshot.
+fn always_include_dirs_default() -> bool {
+    true
 }
 
 pub fn run(root: &Arc<Root>, spec: &QuerySpec) -> QueryResult {
@@ -107,9 +115,16 @@ pub fn run(root: &Arc<Root>, spec: &QuerySpec) -> QueryResult {
                     continue;
                 }
             }
+            // Watchman writes `.watchman-cookie-*` files in watched
+            // roots to synchronize kernel events and strips them from
+            // query results.  If some other watchman-compatible client
+            // wrote cookies into our tree, hide them for parity.
+            if let Some(name) = rel.file_name() {
+                if name.to_string_lossy().starts_with(".watchman-cookie-") {
+                    continue;
+                }
+            }
             if !include_dirs && entry.kind == crate::daemon::tree::FileKind::Dir {
-                // watchman omits directories from query results unless
-                // `always_include_directories` is set.
                 continue;
             }
             // relative_root narrows the query to a subdir of the

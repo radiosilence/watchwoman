@@ -125,6 +125,14 @@ pub fn render_row(
     fields: &[Field],
     clock: &Clock,
 ) -> Value {
+    // Watchman's documented shortcut: if the caller asked for exactly
+    // one field AND that field is `name`, return bare strings in
+    // `files[]` instead of objects.  Jest, Metro, Sapling et al. all
+    // rely on this — breaking it shows up as "files is not an array
+    // of strings" from the client side.
+    if fields.len() == 1 && fields[0] == Field::Name {
+        return Value::String(rel.to_string_lossy().into_owned());
+    }
     let mut out = IndexMap::with_capacity(fields.len());
     for f in fields {
         let v = match f {

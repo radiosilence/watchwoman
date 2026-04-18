@@ -157,8 +157,50 @@ pub fn list_capabilities() -> CommandResult {
     Ok(obj([("capabilities", Value::Array(v))]))
 }
 
-pub fn get_config(_args: &[Value]) -> CommandResult {
+pub fn get_config(args: &[Value]) -> CommandResult {
+    // If a root is supplied and it has a `.watchmanconfig`, return
+    // those contents verbatim. Otherwise return an empty config.
+    if let Some(path) = args.first().and_then(Value::as_str) {
+        let file = std::path::PathBuf::from(path).join(".watchmanconfig");
+        if let Ok(bytes) = std::fs::read(&file) {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                return Ok(obj([("config", json_to_value(v))]));
+            }
+        }
+    }
     Ok(obj([("config", Value::Object(IndexMap::new()))]))
+}
+
+fn json_to_value(v: serde_json::Value) -> Value {
+    use serde_json::Value as J;
+    match v {
+        J::Null => Value::Null,
+        J::Bool(b) => Value::Bool(b),
+        J::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::Real(f)
+            } else {
+                Value::Null
+            }
+        }
+        J::String(s) => Value::String(s),
+        J::Array(a) => Value::Array(a.into_iter().map(json_to_value).collect()),
+        J::Object(o) => {
+            let mut m = IndexMap::with_capacity(o.len());
+            for (k, val) in o {
+                m.insert(k, json_to_value(val));
+            }
+            Value::Object(m)
+        }
+    }
+}
+
+pub fn get_log() -> CommandResult {
+    // Watchwoman intentionally doesn't maintain an in-daemon log;
+    // tracing goes to stderr. Return an empty log for shape parity.
+    Ok(obj([("log", Value::Array(vec![]))]))
 }
 
 pub fn log_level(_args: &[Value]) -> CommandResult {
