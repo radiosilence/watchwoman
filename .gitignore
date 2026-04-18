@@ -10,5 +10,3 @@
 /.idea/
 /.claude/settings.local.json
 
-# Recorded fixtures we regenerate locally
-/tests/fixtures/generated/

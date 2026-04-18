@@ -1,0 +1,14 @@
+{
+  "debug": {
+    "cookie_files": [
+      "/private/var/folders/qk/9lsdhybs6dl71l6_sswv2pjr0000gp/T/watchwoman-scratch-JV8jHd/.git/.watchman-cookie-James-Cleveland-Mac.local-64654-0"
+    ]
+  },
+  "clock": "c:1776510548:64654:1:7",
+  "is_fresh_instance": true,
+  "files": [
+    "main.rs",
+    "lib.rs"
+  ],
+  "version": "2026.03.30.00"
+}

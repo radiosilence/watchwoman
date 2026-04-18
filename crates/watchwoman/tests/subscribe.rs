@@ -13,7 +13,6 @@ fn obj(entries: &[(&str, Value)]) -> Value {
 }
 
 #[test]
-#[ignore = "unilateral push is wired in a follow-up ticket"]
 fn subscribe_emits_changes() {
     let h = Harness::spawn().expect("spawn daemon");
     let scratch = Scratch::new().unwrap();

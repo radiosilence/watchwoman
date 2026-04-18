@@ -10,10 +10,12 @@ use anyhow::Context;
 pub mod clock;
 pub mod root;
 pub mod server;
+pub mod session;
 pub mod state;
 pub mod tree;
 pub mod watcher;
 
+pub use session::Session;
 pub use state::DaemonState;
 
 /// Run the daemon in the foreground.  Used by `--foreground-daemon` and

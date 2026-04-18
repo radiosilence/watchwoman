@@ -7,6 +7,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 use watchwoman_protocol::Value;
 
+use crate::daemon::session::Session;
 use crate::daemon::state::DaemonState;
 
 pub mod clock;
@@ -33,8 +34,8 @@ pub enum CommandError {
 pub type CommandResult = Result<Value, CommandError>;
 
 /// Entry point invoked for every PDU the server reads.
-pub fn dispatch(state: &Arc<DaemonState>, pdu: Value) -> Value {
-    match dispatch_inner(state, pdu) {
+pub fn dispatch(state: &Arc<DaemonState>, session: &Session, pdu: Value) -> Value {
+    match dispatch_inner(state, session, pdu) {
         Ok(v) => v,
         Err(e) => {
             let mut m = IndexMap::new();
@@ -44,7 +45,7 @@ pub fn dispatch(state: &Arc<DaemonState>, pdu: Value) -> Value {
     }
 }
 
-fn dispatch_inner(state: &Arc<DaemonState>, pdu: Value) -> CommandResult {
+fn dispatch_inner(state: &Arc<DaemonState>, session: &Session, pdu: Value) -> CommandResult {
     let arr = pdu
         .as_array()
         .ok_or_else(|| CommandError::BadArgs("PDU must be an array".into()))?;
@@ -72,7 +73,7 @@ fn dispatch_inner(state: &Arc<DaemonState>, pdu: Value) -> CommandResult {
         "query" => query::query(state, args),
         "find" => query::find(state, args),
         "since" => query::since(state, args),
-        "subscribe" => subscribe::subscribe(state, args),
+        "subscribe" => subscribe::subscribe(state, session, args),
         "unsubscribe" => subscribe::unsubscribe(state, args),
         "flush-subscriptions" => subscribe::flush_subscriptions(state, args),
         "state-enter" => state::state_enter(state, args),

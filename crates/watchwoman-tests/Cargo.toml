@@ -19,3 +19,7 @@ indexmap = { version = "2", features = ["serde"] }
 
 [dev-dependencies]
 nix.workspace = true
+
+[[bin]]
+name = "record-fixtures"
+path = "src/bin/record_fixtures.rs"
