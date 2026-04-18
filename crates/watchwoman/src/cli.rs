@@ -148,6 +148,118 @@ pub enum Command {
     DebugShowCursors { path: String },
     /// Block until the daemon settles pending events.
     DebugPollForSettle { path: String },
+    /// Install a macOS LaunchAgent so the daemon auto-starts at login
+    /// and gets `launchctl` lifecycle management.
+    #[cfg(target_os = "macos")]
+    InstallAgent,
+    /// Remove the LaunchAgent installed by `install-agent`.
+    #[cfg(target_os = "macos")]
+    UninstallAgent,
+}
+
+#[cfg(target_os = "macos")]
+const AGENT_LABEL: &str = "cc.blit.watchwoman";
+
+#[cfg(target_os = "macos")]
+fn agent_plist_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    Path::new(&home)
+        .join("Library/LaunchAgents")
+        .join(format!("{AGENT_LABEL}.plist"))
+}
+
+#[cfg(target_os = "macos")]
+fn install_launch_agent() -> anyhow::Result<ExitCode> {
+    let plist = agent_plist_path();
+    let exe = std::env::current_exe().context("resolving current_exe")?;
+    let log = watchwoman_state_dir()?.join("watchwoman.log");
+    let sock = watchwoman_state_dir()?.join("sock");
+    if let Some(parent) = log.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    if let Some(parent) = plist.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let plist_body = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>{AGENT_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{exe}</string>
+        <string>--sockname</string>
+        <string>{sock}</string>
+        <string>--foreground-daemon</string>
+    </array>
+    <key>KeepAlive</key>
+    <dict><key>Crashed</key><true/></dict>
+    <key>RunAtLoad</key><true/>
+    <key>StandardErrorPath</key><string>{log}</string>
+    <key>StandardOutPath</key><string>{log}</string>
+    <key>ProcessType</key><string>Interactive</string>
+</dict>
+</plist>
+"#,
+        exe = exe.display(),
+        sock = sock.display(),
+        log = log.display(),
+    );
+    std::fs::write(&plist, plist_body)?;
+
+    let uid = nix::unistd::getuid().as_raw();
+    let target = format!("gui/{uid}");
+    // Bootstrap the plist; ignore errors on "already loaded" re-runs.
+    let _ = std::process::Command::new("launchctl")
+        .arg("bootout")
+        .arg(format!("{target}/{AGENT_LABEL}"))
+        .output();
+    let status = std::process::Command::new("launchctl")
+        .arg("bootstrap")
+        .arg(&target)
+        .arg(&plist)
+        .status()
+        .context("launchctl bootstrap")?;
+    if !status.success() {
+        anyhow::bail!(
+            "launchctl bootstrap returned non-zero; plist at {} — try running it manually.",
+            plist.display()
+        );
+    }
+    println!(
+        "Installed LaunchAgent {AGENT_LABEL}.\n  plist:  {}\n  socket: {}\n  log:    {}",
+        plist.display(),
+        sock.display(),
+        log.display()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(target_os = "macos")]
+fn uninstall_launch_agent() -> anyhow::Result<ExitCode> {
+    let plist = agent_plist_path();
+    let uid = nix::unistd::getuid().as_raw();
+    let target = format!("gui/{uid}/{AGENT_LABEL}");
+    let _ = std::process::Command::new("launchctl")
+        .arg("bootout")
+        .arg(&target)
+        .output();
+    if plist.exists() {
+        std::fs::remove_file(&plist).ok();
+        println!("Removed LaunchAgent {AGENT_LABEL} ({})", plist.display());
+    } else {
+        println!("No LaunchAgent installed for {AGENT_LABEL}.");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(target_os = "macos")]
+fn watchwoman_state_dir() -> anyhow::Result<PathBuf> {
+    let base = crate::sock::resolve(None)?;
+    base.parent()
+        .map(|p| p.to_path_buf())
+        .context("resolving state dir")
 }
 
 pub fn run() -> anyhow::Result<ExitCode> {
@@ -178,6 +290,10 @@ pub fn run() -> anyhow::Result<ExitCode> {
             generate(shell, &mut command, "watchwoman", &mut io::stdout());
             Ok(ExitCode::SUCCESS)
         }
+        #[cfg(target_os = "macos")]
+        Command::InstallAgent => install_launch_agent(),
+        #[cfg(target_os = "macos")]
+        Command::UninstallAgent => uninstall_launch_agent(),
         other => run_client(
             &other,
             &sock_path,
@@ -276,6 +392,10 @@ fn build_pdu(cmd: &Command) -> anyhow::Result<Value> {
     let mut parts: Vec<Value> = Vec::with_capacity(4);
     match cmd {
         Command::ForegroundDaemon | Command::Completion { .. } => {
+            unreachable!("handled by caller")
+        }
+        #[cfg(target_os = "macos")]
+        Command::InstallAgent | Command::UninstallAgent => {
             unreachable!("handled by caller")
         }
         Command::GetSockname => parts.push(Value::String("get-sockname".into())),

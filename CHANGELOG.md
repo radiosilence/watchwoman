@@ -3,6 +3,15 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.1] - 2026-04-18
+
+### Added
+
+- `watchwoman install-agent` / `uninstall-agent` on macOS — drops a
+  LaunchAgent plist at `~/Library/LaunchAgents/cc.blit.watchwoman.plist`
+  and bootstraps it with `launchctl`, so the daemon auto-starts at
+  login and restarts on crash.  Not run automatically; opt in.
+
 ## [0.3.0] - 2026-04-18
 
 Battle-test release: parity against real watchman 2026.03.30.00
