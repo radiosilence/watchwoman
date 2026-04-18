@@ -3,7 +3,22 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.1.1] - 2026-04-18
+
+### Added
+
+- CI/CD pipeline: test + clippy + fmt on every push, gated release on
+  Cargo.toml version bump, prebuilt tarballs for six macOS/Linux
+  targets (amd64 + arm64, glibc + musl), `cargo publish`, and
+  automated Homebrew formula regeneration.
+
+### Changed
+
+- Dropped the `rust-toolchain.toml` pin so CI installs the target for
+  the same toolchain it resolves (musl target was missing against
+  a 1.94 pin overridden on a stable host).
+
+## [0.1.0] - initial scaffold
 
 ### Added
 
