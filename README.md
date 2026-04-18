@@ -50,16 +50,17 @@ cookie-based synchronisation overhead. Watchwoman batches events at
 
 ## Install once, forget forever
 
-Install paths all land the same four binaries on `$PATH`:
+Install paths all land the same six binaries on `$PATH`:
 
 ```sh
-# macOS & Linux, prebuilt
-brew install radiosilence/watchwoman/watchwoman
+# mise — recommended; pulls the prebuilt tarball for your OS/arch
 mise use -g "github:radiosilence/watchwoman@latest"
 
-# From source
-cargo install watchwoman --bin watchwoman --bin watchman \
-                        --bin watchman-wait --bin watchman-make
+# Homebrew — macOS & Linux
+brew install radiosilence/watchwoman/watchwoman
+
+# cargo — source build; always latest commit
+cargo install watchwoman
 ```
 
 Ships with:
@@ -68,6 +69,8 @@ Ships with:
 - `watchman` — argv-dispatched alias so every existing tool resolves us
 - `watchman-wait` — block until a matching file changes
 - `watchman-make` — re-run a command on change, debounced
+- `watchman-diag` — dump daemon state as one JSON blob
+- `watchmanctl` — `status` / `shutdown` / `log-level` / `recrawl`
 
 The daemon auto-spawns on the first CLI call and stays alive until
 the socket disappears. Replacing an existing watchman install:
