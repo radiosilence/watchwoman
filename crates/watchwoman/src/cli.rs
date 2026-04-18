@@ -1,4 +1,4 @@
-use std::io::{self, Write as _};
+use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, ExitCode, Stdio};
 use std::time::{Duration, Instant};
@@ -42,8 +42,21 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_spawn: bool,
 
+    /// Read a JSON PDU from stdin and send it to the daemon directly.
+    /// Used by `git fsmonitor`, Sapling, Metro, and every other tool
+    /// that speaks watchman's PDU protocol without the subcommand CLI.
+    /// Pairs with `--persistent` for subscribe streams.
+    #[arg(short = 'j', long = "json-command", global = true)]
+    pub json_command: bool,
+
+    /// Stay connected after the first response and stream unilateral
+    /// PDUs (subscription updates, state-broadcasts) until EOF or
+    /// the daemon closes the connection.  Matches watchman's `-p`.
+    #[arg(short = 'p', long = "persistent", global = true)]
+    pub persistent: bool,
+
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -132,14 +145,28 @@ pub fn run() -> anyhow::Result<ExitCode> {
     let sock_path = sock::resolve(cli.sockname.as_deref())?;
     tracing::debug!(?sock_path, "resolved socket path");
 
-    match &cli.command {
+    // `-j` / `--json-command` reads the PDU from stdin and skips
+    // subcommand parsing. Mutually exclusive with a subcommand.
+    if cli.json_command {
+        return run_stdin_json(&sock_path, cli.no_pretty, cli.no_spawn, cli.persistent);
+    }
+
+    let Some(cmd) = cli.command else {
+        // `watchman` with no args prints help and exits 1, matching
+        // the upstream behaviour.
+        Cli::command().print_help()?;
+        println!();
+        return Ok(ExitCode::from(1));
+    };
+
+    match cmd {
         Command::ForegroundDaemon => crate::daemon::run_foreground(&sock_path),
         Command::Completion { shell } => {
-            let mut cmd = Cli::command();
-            generate(*shell, &mut cmd, "watchwoman", &mut io::stdout());
+            let mut command = Cli::command();
+            generate(shell, &mut command, "watchwoman", &mut io::stdout());
             Ok(ExitCode::SUCCESS)
         }
-        other => run_client(other, &sock_path, cli.no_pretty, cli.no_spawn),
+        other => run_client(&other, &sock_path, cli.no_pretty, cli.no_spawn, cli.persistent),
     }
 }
 
@@ -158,34 +185,76 @@ fn run_client(
     sock_path: &Path,
     no_pretty: bool,
     no_spawn: bool,
+    persistent: bool,
 ) -> anyhow::Result<ExitCode> {
     let pdu = build_pdu(cmd)?;
+    send_and_print(&pdu, sock_path, no_pretty, no_spawn, persistent)
+}
 
+fn run_stdin_json(
+    sock_path: &Path,
+    no_pretty: bool,
+    no_spawn: bool,
+    persistent: bool,
+) -> anyhow::Result<ExitCode> {
+    let mut buf = String::new();
+    io::stdin()
+        .read_to_string(&mut buf)
+        .context("reading PDU from stdin")?;
+    let trimmed = buf.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("`-j` expected a JSON PDU on stdin");
+    }
+    let json: serde_json::Value = serde_json::from_str(trimmed).context("parsing stdin PDU")?;
+    let pdu = json_to_value(json);
+    send_and_print(&pdu, sock_path, no_pretty, no_spawn, persistent)
+}
+
+fn send_and_print(
+    pdu: &Value,
+    sock_path: &Path,
+    no_pretty: bool,
+    no_spawn: bool,
+    persistent: bool,
+) -> anyhow::Result<ExitCode> {
     if !sock_path.exists() && !no_spawn {
         spawn_daemon(sock_path)?;
     }
 
-    let mut stream = std::os::unix::net::UnixStream::connect(sock_path).with_context(|| {
+    let stream = std::os::unix::net::UnixStream::connect(sock_path).with_context(|| {
         format!(
             "connecting to {} — is the daemon running? (try `watchwoman --foreground-daemon`)",
             sock_path.display()
         )
     })?;
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    // No read timeout in persistent mode — we want to block waiting for
+    // unilateral PDUs.  One-shot mode caps at 30s so a wedged daemon
+    // doesn't hang a shell.
+    if !persistent {
+        stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    }
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
 
-    json::encode_pdu(&mut stream, &pdu)?;
-    stream.flush()?;
+    let mut writer = stream.try_clone()?;
+    json::encode_pdu(&mut writer, pdu)?;
+    writer.flush()?;
 
     let mut reader = std::io::BufReader::new(stream);
     let response = json::read_pdu(&mut reader)?.context("daemon closed connection early")?;
 
     print_response(&response, no_pretty)?;
-    // Mirror watchman's exit-code convention: non-zero when the response
-    // contains an `error` key.
     let err_present = response
         .as_object()
         .is_some_and(|o| o.contains_key("error"));
+
+    if persistent {
+        // Drain subsequent unilateral PDUs until the daemon closes the
+        // connection or the user hits SIGINT.
+        while let Some(v) = json::read_pdu(&mut reader)? {
+            print_response(&v, no_pretty)?;
+        }
+    }
+
     Ok(if err_present {
         ExitCode::from(1)
     } else {
