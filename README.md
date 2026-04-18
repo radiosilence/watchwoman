@@ -14,12 +14,39 @@ brew install radiosilence/watchwoman/watchwoman
 | Pain                               | watchman                                                                                             | watchwoman                                                                                                 |
 |------------------------------------|------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|
 | **Memory**                         | Append-only cache grows unbounded — routinely 1–3 GB after a workday on active repos.                | One `BTreeMap<PathBuf, FileEntry>` per root, bounded by live file count. No historical ballast.            |
-| **Startup / recrawls**             | Synchronous full crawl on start and on every "recrawl" trigger. Multi-minute on monorepos.           | Inline initial scan using the `ignore` crate; FSEvents recursive mode on macOS; 5 ms event batching.       |
+| **Startup / recrawls**             | Synchronous full crawl on start and on every "recrawl" trigger. Multi-minute on monorepos.           | Inline initial scan with a manual directory walker; FSEvents recursive mode on macOS; 5 ms event batching.  |
 | **`fs.inotify.max_user_watches`**  | Hits the Linux 8192-inode default on modest repos, then burns CPU re-scanning.                       | One registration per root. Irrelevant what the sysctl says.                                                 |
 | **Log noise**                      | `RecrawlWarning`, `No watching anymore`, `root dir disappeared` — shouted into every CI log at INFO. | WARN default. Nothing logged unless the kernel actually reported a problem. `RUST_LOG=debug` when needed.  |
-| **State corruption**               | Half-written state files wedge the daemon silently; fix is `rm -rf ~/.local/state/watchman`.         | Zero on-disk state. Socket is the only artefact; stale socket is cleaned on start.                         |
+| **State corruption**               | Half-written state files wedge the daemon silently; fix is `rm -rf ~/.local/state/watchman`.         | Zero on-disk state (modulo opt-in trigger persistence). Socket is the only artefact, cleaned on start.     |
 | **Crashes**                        | Requires manual restart; subscribers drop silently.                                                   | Next CLI call auto-spawns a fresh daemon. Subscribers reconnect.                                           |
 | **Dependencies**                   | C++ + Folly + fbthrift + fizz + wangle + glog + gflags + libsodium + … (≈110 MB of brew deps).       | One ~6 MB static binary. libc.                                                                              |
+
+## Benchmarks
+
+Measured against real watchman `2026.03.30.00` on macOS arm64, both
+daemons on isolated unix sockets, same `.watchmanconfig` on each root
+so `node_modules` is excluded identically. Projects are freshly
+scaffolded `create-vite`, `create-next-app`, and `create-expo-app`
+(with their full `node_modules` installed). Full matrix and script
+in [`bench/`](./bench/) once I split it out of the battle-test hack.
+
+| metric                     | watchwoman |   watchman   | speedup          |
+|----------------------------|-----------:|-------------:|:----------------:|
+| cold scan (vite/next/rn)   |    ~26 ms  |    ~112 ms   | **4.2× faster**  |
+| query, 10-iter median      |    3.7 ms  |    100.0 ms  | **27× faster**   |
+| scan 10 k-file stress dir  |     48 ms  |     120 ms   | **2.5× faster**  |
+| RSS (3 roots watched)      |   9.6 MB   |    26.5 MB   | **2.8× smaller** |
+| RSS (after 10 k stress)    |   16 MB    |    29 MB     | **1.8× smaller** |
+
+Query result counts match exactly on every tested project after the
+parity fixes in 0.2.3 landed (Vite: 23/23 files, Next: 21/21, Expo:
+24/24 — including the documented `ignore_vcs` quirk where `.git` and
+its immediate children are reported but not recursed).
+
+watchman hasn't materially changed on these numbers in years — memory
+bloats over a session, query time is dominated by a fixed ~100 ms
+cookie-based synchronisation overhead. Watchwoman batches events at
+5 ms instead and has no cookie round-trip, hence the 27× query win.
 
 ## Install once, forget forever
 
