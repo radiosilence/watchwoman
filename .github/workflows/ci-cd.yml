@@ -8,7 +8,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -123,9 +123,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS
-          - { os: macos-latest, target: aarch64-apple-darwin,     platform: macos-arm64 }
-          - { os: macos-13,     target: x86_64-apple-darwin,      platform: macos-amd64 }
+          # macOS — both slices built on the arm64 runner.
+          # macos-13 (Intel) has a chronic queue backlog on GitHub's
+          # free tier; cross-compiling from arm64 keeps the pipeline
+          # unblocked and all SDKs are universal anyway.
+          - { os: macos-latest, target: aarch64-apple-darwin, platform: macos-arm64 }
+          - { os: macos-latest, target: x86_64-apple-darwin,  platform: macos-amd64 }
           # Linux (glibc) — dynamic
           - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  platform: linux-amd64-gnu  }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, platform: linux-arm64-gnu  }
