@@ -22,8 +22,18 @@ use crate::sock;
 )]
 pub struct Cli {
     /// Path to the unix socket.  Falls back to $WATCHMAN_SOCK, then a
-    /// platform default under $XDG_STATE_HOME (zeroconf).
-    #[arg(long, env = "WATCHMAN_SOCK", global = true)]
+    /// platform default under $XDG_STATE_HOME (zeroconf).  Upstream
+    /// watchman accepts this as `-U/--sockname` (deprecated) and
+    /// `-u/--unix-listener-path`; all three forms are accepted.
+    #[arg(
+        long,
+        short = 'U',
+        alias = "unix-listener-path",
+        visible_alias = "unix-listener-path",
+        visible_short_alias = 'u',
+        env = "WATCHMAN_SOCK",
+        global = true
+    )]
     pub sockname: Option<String>,
 
     /// Select wire encoding for socket output. Defaults to JSON for CLI use.
@@ -41,6 +51,22 @@ pub struct Cli {
     /// Don't auto-spawn the daemon if the socket is missing.
     #[arg(long, global = true)]
     pub no_spawn: bool,
+
+    /// Path to a log file.  Tracing emits to stderr by default; this
+    /// redirects it to the given path.
+    #[arg(short = 'o', long, global = true, value_name = "PATH")]
+    pub logfile: Option<String>,
+
+    /// Numeric log level passed to tracing.  0 = off, 1 = warn (default),
+    /// 2 = debug, 3+ = trace.
+    #[arg(long, global = true, value_name = "LEVEL")]
+    pub log_level: Option<u8>,
+
+    /// Path to a pidfile.  Watchwoman's daemon uses the socket path
+    /// as its liveness signal, but writing a pidfile keeps scripts
+    /// and monitors that grep for it happy.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub pidfile: Option<String>,
 
     /// Read a JSON PDU from stdin and send it to the daemon directly.
     /// Used by `git fsmonitor`, Sapling, Metro, and every other tool
@@ -68,8 +94,8 @@ pub enum Encoding {
 
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
-    /// Run the watchwoman daemon in the foreground.
-    #[command(name = "--foreground-daemon", hide = true)]
+    /// Run the daemon in the foreground (matches watchman's `-f/--foreground`).
+    #[command(name = "--foreground-daemon", visible_aliases = ["foreground"], hide = true)]
     ForegroundDaemon,
     /// Print shell completion script for the given shell.
     Completion {
@@ -148,6 +174,50 @@ pub enum Command {
     DebugShowCursors { path: String },
     /// Block until the daemon settles pending events.
     DebugPollForSettle { path: String },
+    /// Legacy glob-style finder (`since`-less subset of `query`).
+    Find {
+        path: String,
+        #[arg(trailing_var_arg = true)]
+        patterns: Vec<String>,
+    },
+    /// Legacy since-delta (subset of `query`).
+    Since { path: String, clock: String },
+    /// Install a trigger that runs a command when files match.
+    Trigger { path: String, spec: String },
+    /// List triggers installed on a root.
+    TriggerList { path: String },
+    /// Delete a named trigger.
+    TriggerDel { path: String, name: String },
+    /// Dump the daemon's in-memory log ring.
+    GetLog,
+    /// Same as `log-level`, for parity with upstream naming.
+    GlobalLogLevel { level: Option<String> },
+    /// Return the SHA-1 content hash for a file in the watched tree.
+    DebugContenthash { path: String },
+    /// High-level daemon status dump.
+    DebugStatus,
+    /// Per-root status + file count.
+    DebugRootStatus { path: String },
+    /// Report the watcher backend (`fsevents`/`inotify`/`kqueue`).
+    DebugWatcherInfo { path: String },
+    /// Clear watcher backend diagnostic caches.
+    DebugWatcherInfoClear,
+    /// List states currently asserted on a root (via `state-enter`).
+    DebugGetAssertedStates { path: String },
+    /// Dump registered subscriptions on a root.
+    DebugGetSubscriptions { path: String },
+    /// Force a recrawl on the kqueue + FSEvents pair.
+    #[command(name = "debug-kqueue-and-fsevents-recrawl")]
+    DebugKqueueAndFsEventsRecrawl { path: String },
+    /// Inject a synthetic dropped-event signal for FSEvents testing.
+    #[command(name = "debug-fsevents-inject-drop")]
+    DebugFsEventsInjectDrop { path: String },
+    /// Toggle the debug parallel-crawl flag (accepted, no-op).
+    DebugSetParallelCrawl,
+    /// Pause/unpause subscriptions globally (accepted, no-op).
+    DebugSetSubscriptionsPaused,
+    /// Return the symlink-target cache contents (always empty).
+    DebugSymlinkTargetCache,
     /// Install a macOS LaunchAgent so the daemon auto-starts at login
     /// and gets `launchctl` lifecycle management.
     #[cfg(target_os = "macos")]
@@ -264,10 +334,18 @@ fn watchwoman_state_dir() -> anyhow::Result<PathBuf> {
 
 pub fn run() -> anyhow::Result<ExitCode> {
     let cli = Cli::parse();
-    init_tracing();
+    init_tracing(cli.logfile.as_deref(), cli.log_level);
 
     let sock_path = sock::resolve(cli.sockname.as_deref())?;
     tracing::debug!(?sock_path, "resolved socket path");
+
+    if let Some(pidfile) = cli.pidfile.as_deref() {
+        if matches!(cli.command, Some(Command::ForegroundDaemon)) {
+            // Best-effort — not the source of truth, just there for
+            // monitor scripts that expect a pidfile from watchman.
+            let _ = std::fs::write(pidfile, format!("{}\n", std::process::id()));
+        }
+    }
 
     // `-j` / `--json-command` reads the PDU from stdin and skips
     // subcommand parsing. Mutually exclusive with a subcommand.
@@ -304,14 +382,40 @@ pub fn run() -> anyhow::Result<ExitCode> {
     }
 }
 
-fn init_tracing() {
-    // `RUST_LOG=debug watchwoman ...` enables verbose tracing; silent by default.
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .try_init();
+fn init_tracing(logfile: Option<&str>, level: Option<u8>) {
+    // Precedence: RUST_LOG wins; else --log-level numeric; else warn.
+    let filter = if let Ok(f) = tracing_subscriber::EnvFilter::try_from_default_env() {
+        f
+    } else {
+        let level_name = match level.unwrap_or(1) {
+            0 => "off",
+            1 => "warn",
+            2 => "debug",
+            _ => "trace",
+        };
+        tracing_subscriber::EnvFilter::new(level_name)
+    };
+
+    // Writer: file if --logfile was passed (and isn't "-"), else stderr.
+    let builder = tracing_subscriber::fmt().with_env_filter(filter);
+    match logfile {
+        Some("-") | None => {
+            let _ = builder.with_writer(std::io::stderr).try_init();
+        }
+        Some(path) => match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            Ok(file) => {
+                let _ = builder.with_writer(std::sync::Mutex::new(file)).try_init();
+            }
+            Err(e) => {
+                eprintln!("watchwoman: can't open logfile {path}: {e}; falling back to stderr");
+                let _ = builder.with_writer(std::io::stderr).try_init();
+            }
+        },
+    }
 }
 
 fn run_client(
@@ -513,6 +617,80 @@ fn build_pdu(cmd: &Command) -> anyhow::Result<Value> {
         Command::DebugPollForSettle { path } => {
             parts.push(Value::String("debug-poll-for-settle".into()));
             parts.push(Value::String(absolutise(path)));
+        }
+        Command::Find { path, patterns } => {
+            parts.push(Value::String("find".into()));
+            parts.push(Value::String(absolutise(path)));
+            for p in patterns {
+                parts.push(Value::String(p.clone()));
+            }
+        }
+        Command::Since { path, clock } => {
+            parts.push(Value::String("since".into()));
+            parts.push(Value::String(absolutise(path)));
+            parts.push(Value::String(clock.clone()));
+        }
+        Command::Trigger { path, spec } => {
+            parts.push(Value::String("trigger".into()));
+            parts.push(Value::String(absolutise(path)));
+            parts.push(parse_json(spec, "trigger spec")?);
+        }
+        Command::TriggerList { path } => {
+            parts.push(Value::String("trigger-list".into()));
+            parts.push(Value::String(absolutise(path)));
+        }
+        Command::TriggerDel { path, name } => {
+            parts.push(Value::String("trigger-del".into()));
+            parts.push(Value::String(absolutise(path)));
+            parts.push(Value::String(name.clone()));
+        }
+        Command::GetLog => parts.push(Value::String("get-log".into())),
+        Command::GlobalLogLevel { level } => {
+            parts.push(Value::String("global-log-level".into()));
+            if let Some(l) = level {
+                parts.push(Value::String(l.clone()));
+            }
+        }
+        Command::DebugContenthash { path } => {
+            parts.push(Value::String("debug-contenthash".into()));
+            parts.push(Value::String(absolutise(path)));
+        }
+        Command::DebugStatus => parts.push(Value::String("debug-status".into())),
+        Command::DebugRootStatus { path } => {
+            parts.push(Value::String("debug-root-status".into()));
+            parts.push(Value::String(absolutise(path)));
+        }
+        Command::DebugWatcherInfo { path } => {
+            parts.push(Value::String("debug-watcher-info".into()));
+            parts.push(Value::String(absolutise(path)));
+        }
+        Command::DebugWatcherInfoClear => {
+            parts.push(Value::String("debug-watcher-info-clear".into()))
+        }
+        Command::DebugGetAssertedStates { path } => {
+            parts.push(Value::String("debug-get-asserted-states".into()));
+            parts.push(Value::String(absolutise(path)));
+        }
+        Command::DebugGetSubscriptions { path } => {
+            parts.push(Value::String("debug-get-subscriptions".into()));
+            parts.push(Value::String(absolutise(path)));
+        }
+        Command::DebugKqueueAndFsEventsRecrawl { path } => {
+            parts.push(Value::String("debug-kqueue-and-fsevents-recrawl".into()));
+            parts.push(Value::String(absolutise(path)));
+        }
+        Command::DebugFsEventsInjectDrop { path } => {
+            parts.push(Value::String("debug-fsevents-inject-drop".into()));
+            parts.push(Value::String(absolutise(path)));
+        }
+        Command::DebugSetParallelCrawl => {
+            parts.push(Value::String("debug-set-parallel-crawl".into()))
+        }
+        Command::DebugSetSubscriptionsPaused => {
+            parts.push(Value::String("debug-set-subscriptions-paused".into()))
+        }
+        Command::DebugSymlinkTargetCache => {
+            parts.push(Value::String("debug-symlink-target-cache".into()))
         }
         Command::Raw { pdu } => {
             return parse_json(pdu, "raw PDU");
