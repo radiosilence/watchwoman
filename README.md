@@ -97,10 +97,9 @@ open slice.
 - [x] `clock` (SCM-aware), `query`, `find`, `since`.
 - [x] `subscribe`, `unsubscribe`, `flush-subscriptions`.
 - [x] `state-enter`, `state-leave`.
-- [x] `trigger`, `trigger-list`, `trigger-del`.
+- [x] `trigger`, `trigger-list`, `trigger-del` — persisted to disk, survive restart.
 - [x] `log`, `log-level`, `shutdown-server`.
 - [x] `debug-ageout`, `debug-recrawl`, `debug-show-cursors`, `debug-poll-for-settle`.
-- [ ] Trigger persistence across daemon restart — in-memory only.
 - [ ] `debug-drop-privs` — refuse; we never run as root by design.
 
 ### Query language
@@ -141,7 +140,8 @@ are accepted but we settle in 5 ms anyway.
 
 - [x] `watchwoman`, `watchman`.
 - [x] `watchman-wait`, `watchman-make`.
-- [ ] `watchman-diag`, `watchmanctl`, `watchman-replicate-subscription` — deferred.
+- [x] `watchman-diag`, `watchmanctl`.
+- [ ] `watchman-replicate-subscription` — deferred.
 
 ## Development
 

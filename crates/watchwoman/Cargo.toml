@@ -29,6 +29,14 @@ path = "src/bin/watchman_wait.rs"
 name = "watchman-make"
 path = "src/bin/watchman_make.rs"
 
+[[bin]]
+name = "watchman-diag"
+path = "src/bin/watchman_diag.rs"
+
+[[bin]]
+name = "watchmanctl"
+path = "src/bin/watchmanctl.rs"
+
 [dependencies]
 watchwoman-protocol.workspace = true
 anyhow.workspace = true

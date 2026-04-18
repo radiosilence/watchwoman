@@ -57,6 +57,12 @@ pub fn trigger_del(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {
 }
 
 fn spawn_trigger_loop(root: Arc<Root>, root_path: PathBuf, trigger: Trigger) {
+    spawn_trigger_loop_ext(root, root_path, trigger);
+}
+
+/// Public entrypoint so `DaemonState::register_root` can resurrect
+/// persisted triggers without reaching through private API.
+pub fn spawn_trigger_loop_ext(root: Arc<Root>, root_path: PathBuf, trigger: Trigger) {
     let rx = root.tick_tx.subscribe();
     let start_tick = root.clock.current_tick();
     tokio::runtime::Handle::current().spawn(async move {

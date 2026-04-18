@@ -168,7 +168,7 @@ jobs:
           mkdir -p "dist/${NAME}"
           # Ship every binary target built by the watchwoman crate:
           # watchwoman + watchman alias + watchman-wait + watchman-make.
-          for bin in watchwoman watchman watchman-wait watchman-make; do
+          for bin in watchwoman watchman watchman-wait watchman-make watchman-diag watchmanctl; do
             cp "target/${{ matrix.target }}/release/${bin}" "dist/${NAME}/"
           done
           cp README.md CHANGELOG.md LICENSE* "dist/${NAME}/" 2>/dev/null || true
@@ -357,7 +357,7 @@ jobs:
             end
 
             def install
-              %w[watchwoman watchman watchman-wait watchman-make].each do |b|
+              %w[watchwoman watchman watchman-wait watchman-make watchman-diag watchmanctl].each do |b|
                 bin.install b
               end
             end

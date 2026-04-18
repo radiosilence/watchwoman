@@ -64,13 +64,31 @@ impl DaemonState {
         let root_number = self.root_counter.fetch_add(1, Ordering::AcqRel) + 1;
         let root_counter = Arc::new(AtomicU64::new(root_number));
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<WatcherCommand>();
-        let root = Arc::new(Root::new(path.clone(), root_number, root_counter, cmd_tx));
+        let state_dir = self.sock_path.parent().map(|p| p.to_path_buf());
+        let root = Arc::new(Root::new(
+            path.clone(),
+            root_number,
+            root_counter,
+            cmd_tx,
+            state_dir,
+        ));
 
         // Seed the tree synchronously so the first query from the caller
         // sees a populated root — otherwise tools that watch-and-query in
         // the same breath (jest, metro, hg) race the initial scan.
         let entries = watcher::initial_scan(&path);
         root.seed(entries);
+
+        // Rehydrate durable triggers from the last run and restart
+        // their fork-and-exec loops so a daemon restart is invisible.
+        root.load_persisted_triggers();
+        for trigger in root.list_triggers() {
+            crate::commands::trigger::spawn_trigger_loop_ext(
+                root.clone(),
+                root.path.clone(),
+                trigger,
+            );
+        }
 
         self.roots.insert(path.clone(), root.clone());
 

@@ -35,10 +35,9 @@ a smoke-test against real watchman.
 - [x] `query`, `find`, `since`.
 - [x] `subscribe`, `unsubscribe`, `flush-subscriptions`.
 - [x] `state-enter`, `state-leave`.
-- [x] `trigger`, `trigger-list`, `trigger-del`.
-- [ ] Trigger persistence across daemon restart — in-memory only for
-      now; auto-spawn semantics mean this matters less than it does
-      for upstream, but it's on the list.
+- [x] `trigger`, `trigger-list`, `trigger-del` — persisted to
+      `<state-dir>/roots/<root-slug>/triggers.json`, rehydrated on
+      daemon start.
 - [x] `get-config`, `log`, `log-level`.
 - [x] `shutdown-server`.
 - [x] `debug-ageout`, `debug-recrawl`, `debug-show-cursors`.
@@ -99,8 +98,8 @@ a smoke-test against real watchman.
 - [x] `watchman` (argv-dispatched alias).
 - [x] `watchman-wait` — blocks until a matching file changes, prints names.
 - [x] `watchman-make` — re-runs a command on matching changes, throttled.
-- [ ] `watchman-diag` — deferred; `watchman --version --capabilities` covers the ask.
-- [ ] `watchmanctl` — deferred.
+- [x] `watchman-diag` — dumps full daemon state as JSON.
+- [x] `watchmanctl` — `status`/`shutdown`/`log-level`/`recrawl`.
 
 ## Platforms
 

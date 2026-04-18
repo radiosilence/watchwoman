@@ -136,6 +136,18 @@ pub enum Command {
         /// `["command", "arg1", {"key":"val"}]` shape.
         pdu: String,
     },
+    /// Force a full rescan of a root from disk.
+    DebugRecrawl { path: String },
+    /// Ageout sweep (no-op in watchwoman; matches wire shape).
+    DebugAgeout {
+        path: String,
+        #[arg(long, default_value_t = 0)]
+        age: i64,
+    },
+    /// Dump named cursors on a root.
+    DebugShowCursors { path: String },
+    /// Block until the daemon settles pending events.
+    DebugPollForSettle { path: String },
 }
 
 pub fn run() -> anyhow::Result<ExitCode> {
@@ -223,23 +235,15 @@ fn send_and_print(
     no_spawn: bool,
     persistent: bool,
 ) -> anyhow::Result<ExitCode> {
-    if !sock_path.exists() && !no_spawn {
-        spawn_daemon(sock_path)?;
-    }
-
-    let stream = std::os::unix::net::UnixStream::connect(sock_path).with_context(|| {
-        format!(
-            "connecting to {} — is the daemon running? (try `watchwoman --foreground-daemon`)",
-            sock_path.display()
-        )
-    })?;
-    // No read timeout in persistent mode — we want to block waiting for
-    // unilateral PDUs.  One-shot mode caps at 30s so a wedged daemon
-    // doesn't hang a shell.
+    let stream = connect_or_spawn(sock_path, no_spawn)?;
+    // No read timeout in persistent mode — we want to block waiting
+    // for unilateral PDUs.  One-shot mode caps at 30s so a wedged
+    // daemon doesn't hang a shell.
     if !persistent {
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     }
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    let stream = stream;
 
     let mut writer = stream.try_clone()?;
     json::encode_pdu(&mut writer, pdu)?;
@@ -373,6 +377,23 @@ fn build_pdu(cmd: &Command) -> anyhow::Result<Value> {
             parts.push(Value::String(message.clone()));
         }
         Command::ShutdownServer => parts.push(Value::String("shutdown-server".into())),
+        Command::DebugRecrawl { path } => {
+            parts.push(Value::String("debug-recrawl".into()));
+            parts.push(Value::String(absolutise(path)));
+        }
+        Command::DebugAgeout { path, age } => {
+            parts.push(Value::String("debug-ageout".into()));
+            parts.push(Value::String(absolutise(path)));
+            parts.push(Value::Int(*age));
+        }
+        Command::DebugShowCursors { path } => {
+            parts.push(Value::String("debug-show-cursors".into()));
+            parts.push(Value::String(absolutise(path)));
+        }
+        Command::DebugPollForSettle { path } => {
+            parts.push(Value::String("debug-poll-for-settle".into()));
+            parts.push(Value::String(absolutise(path)));
+        }
         Command::Raw { pdu } => {
             return parse_json(pdu, "raw PDU");
         }
@@ -467,6 +488,45 @@ fn value_to_serde(v: &Value) -> serde_json::Value {
             J::Array(out)
         }
     }
+}
+
+/// Connect to the daemon, auto-spawning (and clearing an orphan
+/// socket) if needed.  Watchman's biggest chronic bug is a
+/// socket-file-exists-but-nobody-home state after a shutdown or
+/// crash; we handle it by upgrading ConnectionRefused to a
+/// "clean-and-spawn" retry.
+fn connect_or_spawn(
+    sock_path: &Path,
+    no_spawn: bool,
+) -> anyhow::Result<std::os::unix::net::UnixStream> {
+    // Happy path: socket exists and accepts connections.
+    if sock_path.exists() {
+        match std::os::unix::net::UnixStream::connect(sock_path) {
+            Ok(s) => return Ok(s),
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                tracing::debug!(path = ?sock_path, "orphan socket — respawning");
+                let _ = std::fs::remove_file(sock_path);
+            }
+            Err(e) => {
+                return Err(e).with_context(|| format!("connecting to {}", sock_path.display()))
+            }
+        }
+    }
+
+    if no_spawn {
+        anyhow::bail!(
+            "daemon not running at {} and --no-spawn was set",
+            sock_path.display()
+        );
+    }
+
+    spawn_daemon(sock_path)?;
+    std::os::unix::net::UnixStream::connect(sock_path).with_context(|| {
+        format!(
+            "daemon spawned but {} did not accept connections",
+            sock_path.display()
+        )
+    })
 }
 
 fn spawn_daemon(sock_path: &Path) -> anyhow::Result<()> {
