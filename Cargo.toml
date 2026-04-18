@@ -16,7 +16,7 @@ repository = "https://github.com/radiosilence/watchwoman"
 description = "A drop-in watchman replacement that doesn't eat your RAM."
 
 [workspace.dependencies]
-watchwoman-protocol = { path = "crates/watchwoman-protocol", version = "0.1.0" }
+watchwoman-protocol = { path = "crates/watchwoman-protocol", version = "0.2.0" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
