@@ -29,3 +29,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   work out of the box.
 - Drop-in replacement guide at `docs/REPLACING_WATCHMAN.md`.
 - Homebrew tap: `brew install radiosilence/watchwoman/watchwoman`.
+- BSER v1 and v2 encoder + decoder with streaming read/write helpers.
+  Server sniffs the first byte and speaks whichever encoding the
+  client opened with.
+- Unilateral subscription push: each subscribe spawns a task that
+  watches the root's tick broadcast and streams updates back to the
+  connection until it closes.
+- Fixture recorder binary (`cargo run -p watchwoman-tests --bin
+  record-fixtures`) captures JSON and BSER-v2 responses from the real
+  watchman for parity tests.
