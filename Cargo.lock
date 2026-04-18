@@ -1418,7 +1418,7 @@ dependencies = [
 
 [[package]]
 name = "watchwoman"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "watchwoman-protocol"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "indexmap",
@@ -1460,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "watchwoman-tests"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "indexmap",
