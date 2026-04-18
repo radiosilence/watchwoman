@@ -24,6 +24,46 @@ pub struct SubscriptionSpec {
     pub query: watchwoman_protocol::Value,
 }
 
+/// Installed trigger: fork+exec command on each tick where the query
+/// matches any changed file.
+#[derive(Debug, Clone)]
+pub struct Trigger {
+    pub name: String,
+    pub command: Vec<String>,
+    pub expression: watchwoman_protocol::Value,
+    pub append_files: bool,
+    pub stdin: Option<TriggerStdin>,
+    pub max_files_stdin: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TriggerStdin {
+    /// Filenames, one per line, newline-terminated.
+    NamePerLine,
+    /// A JSON array of `{"name": "..."}` objects.
+    JsonName,
+}
+
+impl Trigger {
+    /// Build the watchman-style query spec this trigger should run on
+    /// every tick. `since_clock` fences the query so the trigger only
+    /// fires for newly changed files.
+    pub fn query_spec(
+        &self,
+        since_clock: &str,
+    ) -> Result<watchwoman_protocol::Value, crate::commands::CommandError> {
+        use watchwoman_protocol::Value;
+        let mut spec = indexmap::IndexMap::new();
+        spec.insert("expression".into(), self.expression.clone());
+        spec.insert(
+            "fields".into(),
+            Value::Array(vec![Value::String("name".into())]),
+        );
+        spec.insert("since".into(), Value::String(since_clock.to_owned()));
+        Ok(Value::Object(spec))
+    }
+}
+
 pub struct Root {
     pub path: PathBuf,
     pub root_number: u64,
@@ -37,6 +77,7 @@ pub struct Root {
     pub watcher_cmd_tx: mpsc::UnboundedSender<WatcherCommand>,
     root_number_pool: Arc<AtomicU64>,
     subscriptions: RwLock<HashMap<String, SubscriptionSpec>>,
+    triggers: RwLock<HashMap<String, Trigger>>,
 }
 
 pub enum WatcherCommand {
@@ -61,7 +102,24 @@ impl Root {
             watcher_cmd_tx,
             root_number_pool,
             subscriptions: RwLock::new(HashMap::new()),
+            triggers: RwLock::new(HashMap::new()),
         }
+    }
+
+    pub fn install_trigger(&self, t: Trigger) {
+        self.triggers.write().insert(t.name.clone(), t);
+    }
+
+    pub fn remove_trigger(&self, name: &str) -> bool {
+        self.triggers.write().remove(name).is_some()
+    }
+
+    pub fn list_triggers(&self) -> Vec<Trigger> {
+        self.triggers.read().values().cloned().collect()
+    }
+
+    pub fn has_trigger(&self, name: &str) -> bool {
+        self.triggers.read().contains_key(name)
     }
 
     /// Apply a batch of path changes to the tree and bump the clock once.

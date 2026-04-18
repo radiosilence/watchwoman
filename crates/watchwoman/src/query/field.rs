@@ -31,6 +31,7 @@ pub enum Field {
     CClock,
     OClock,
     SymlinkTarget,
+    ContentSha1Hex,
 }
 
 impl Field {
@@ -56,6 +57,7 @@ impl Field {
             "cclock" => Self::CClock,
             "oclock" => Self::OClock,
             "symlink_target" => Self::SymlinkTarget,
+            "content.sha1hex" => Self::ContentSha1Hex,
             _ => return None,
         })
     }
@@ -82,6 +84,7 @@ impl Field {
             Self::CClock => "cclock",
             Self::OClock => "oclock",
             Self::SymlinkTarget => "symlink_target",
+            Self::ContentSha1Hex => "content.sha1hex",
         }
     }
 }
@@ -115,7 +118,13 @@ pub fn parse_list(value: &Value) -> Result<Vec<Field>, CommandError> {
     Ok(out)
 }
 
-pub fn render_row(rel: &Path, entry: &FileEntry, fields: &[Field], clock: &Clock) -> Value {
+pub fn render_row(
+    root_path: &Path,
+    rel: &Path,
+    entry: &FileEntry,
+    fields: &[Field],
+    clock: &Clock,
+) -> Value {
     let mut out = IndexMap::with_capacity(fields.len());
     for f in fields {
         let v = match f {
@@ -142,10 +151,33 @@ pub fn render_row(rel: &Path, entry: &FileEntry, fields: &[Field], clock: &Clock
                 Some(t) => Value::String(t.clone()),
                 None => Value::Null,
             },
+            Field::ContentSha1Hex => sha1_of(&root_path.join(rel)),
         };
         out.insert(f.wire_name().to_owned(), v);
     }
     // Single-field-`name` queries degenerate to strings in watchman; keep
     // the object shape so tests can uniformly introspect.
     Value::Object(out)
+}
+
+fn sha1_of(abs: &Path) -> Value {
+    use sha1::Digest;
+    let Ok(mut file) = std::fs::File::open(abs) else {
+        return Value::Null;
+    };
+    let mut hasher = sha1::Sha1::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match std::io::Read::read(&mut file, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(_) => return Value::Null,
+        }
+    }
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(40);
+    for b in digest {
+        hex.push_str(&format!("{b:02x}"));
+    }
+    Value::String(hex)
 }

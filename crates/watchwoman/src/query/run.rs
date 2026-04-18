@@ -101,7 +101,13 @@ pub fn run(root: &Arc<Root>, spec: &QuerySpec) -> QueryResult {
                 rel,
             };
             if expr::eval(&spec.expression, entry, &ctx) {
-                files.push(field::render_row(rel, entry, &spec.fields, &root.clock));
+                files.push(field::render_row(
+                    &root.path,
+                    rel,
+                    entry,
+                    &spec.fields,
+                    &root.clock,
+                ));
             }
         }
     }

@@ -38,3 +38,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Fixture recorder binary (`cargo run -p watchwoman-tests --bin
   record-fixtures`) captures JSON and BSER-v2 responses from the real
   watchman for parity tests.
+- `trigger`, `trigger-list`, `trigger-del` commands. Installed triggers
+  fork-and-exec on every tick where the expression matches, with
+  `append_files` and `stdin: NAME_PER_LINE|json` modes supported.
+- `content.sha1hex` field reads file contents on demand and returns the
+  lowercase hex-encoded SHA-1 digest.

@@ -15,6 +15,7 @@ pub mod info;
 pub mod query;
 pub mod state;
 pub mod subscribe;
+pub mod trigger;
 pub mod watch;
 
 #[derive(Debug, thiserror::Error)]
@@ -78,6 +79,9 @@ fn dispatch_inner(state: &Arc<DaemonState>, session: &Session, pdu: Value) -> Co
         "flush-subscriptions" => subscribe::flush_subscriptions(state, args),
         "state-enter" => state::state_enter(state, args),
         "state-leave" => state::state_leave(state, args),
+        "trigger" => trigger::trigger(state, args),
+        "trigger-list" => trigger::trigger_list(state, args),
+        "trigger-del" => trigger::trigger_del(state, args),
         "shutdown-server" => {
             state.request_shutdown();
             let mut m = IndexMap::new();
