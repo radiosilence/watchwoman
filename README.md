@@ -94,10 +94,17 @@ Wire protocol, CLI surface, capability advertisement, and the
 expression language. If your tool already talks to watchman, it does
 not need to know watchwoman exists.
 
+### Platforms
+
+Linux (glibc and musl) and macOS, amd64 and arm64. Windows is not
+supported — the daemon leans on unix sockets and unix-only syscalls;
+a Windows port would need named pipes and a different watcher
+backend, tracked as a separate piece of work.
+
 ### What's not yet ported
 
-BSER v1/v2 (JSON path works; pywatchman needs BSER), triggers,
-SCM-aware clocks (`scm:hg:...`), `content.sha1hex` fields. Tracked on
+SCM-aware clocks (`scm:hg:...`, `scm:git:...`) and durable triggers
+across daemon restart. Tracked on
 [issue #1](https://github.com/radiosilence/watchwoman/issues/1).
 
 ## Status
@@ -120,15 +127,20 @@ Installs both `watchwoman` and `watchman` (drop-in alias).
 ### mise
 
 ```sh
-mise use -g "cargo:watchwoman@latest"
+mise use -g "github:radiosilence/watchwoman@latest"
 ```
 
-### cargo
+Fetches the prebuilt tarball off the GitHub release for your
+OS/arch — no local toolchain required.
+
+### cargo (source install)
 
 ```sh
-cargo install --git https://github.com/radiosilence/watchwoman \
-  --bin watchwoman --bin watchman
+cargo install watchwoman --bin watchwoman --bin watchman
 ```
+
+Builds from source; slower than brew/mise but picks up the latest
+commit when paired with `--git`.
 
 ### Shell completions
 

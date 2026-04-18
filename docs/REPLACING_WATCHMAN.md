@@ -23,14 +23,7 @@ rm -rf "$TMPDIR"/*-state
 
 ## 2. Install watchwoman
 
-### cargo
-
-```sh
-cargo install --git https://github.com/radiosilence/watchwoman \
-  --bin watchwoman --bin watchman --root "$HOME/.cargo"
-```
-
-### brew
+### brew (recommended on macOS)
 
 ```sh
 brew install radiosilence/watchwoman/watchwoman
@@ -39,9 +32,18 @@ brew install radiosilence/watchwoman/watchwoman
 ### mise
 
 ```sh
-mise use -g "cargo:watchwoman@latest"
+mise use -g "github:radiosilence/watchwoman@latest"
 # or pin:
-# mise use -g "cargo:watchwoman@0.1.0"
+# mise use -g "github:radiosilence/watchwoman@0.1.0"
+```
+
+Fetches the prebuilt tarball straight from the GitHub release for
+your OS / arch — no local toolchain needed.
+
+### cargo (source install, last resort)
+
+```sh
+cargo install watchwoman --bin watchwoman --bin watchman
 ```
 
 Both binaries (`watchwoman` and `watchman`) land in the same `bin/` dir.
