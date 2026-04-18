@@ -166,7 +166,13 @@ pub fn run() -> anyhow::Result<ExitCode> {
             generate(shell, &mut command, "watchwoman", &mut io::stdout());
             Ok(ExitCode::SUCCESS)
         }
-        other => run_client(&other, &sock_path, cli.no_pretty, cli.no_spawn, cli.persistent),
+        other => run_client(
+            &other,
+            &sock_path,
+            cli.no_pretty,
+            cli.no_spawn,
+            cli.persistent,
+        ),
     }
 }
 

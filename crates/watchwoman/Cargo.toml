@@ -18,6 +18,17 @@ path = "src/main.rs"
 name = "watchman"
 path = "src/main.rs"
 
+# Companion tools ported from watchman's `watchman-wait` and
+# `watchman-make`.  Both are thin subscribe wrappers that talk to the
+# same daemon on the same socket.
+[[bin]]
+name = "watchman-wait"
+path = "src/bin/watchman_wait.rs"
+
+[[bin]]
+name = "watchman-make"
+path = "src/bin/watchman_make.rs"
+
 [dependencies]
 watchwoman-protocol.workspace = true
 anyhow.workspace = true

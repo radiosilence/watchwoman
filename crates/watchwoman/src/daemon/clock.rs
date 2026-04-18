@@ -55,8 +55,8 @@ impl Clock {
     }
 }
 
-/// Parsed clock spec. Unknown forms fall through to `Epoch(0)` so `since`
-/// returns every file rather than erroring.
+/// Parsed clock spec.  Unknown forms fall through to `Epoch(0)` so
+/// `since` returns every file rather than erroring.
 #[derive(Debug, Clone)]
 pub enum ClockSpec {
     Epoch,
@@ -69,6 +69,17 @@ pub enum ClockSpec {
         root_number: u64,
         tick: u64,
     },
+    /// `scm:<vcs>:<mergebase>` — file-filter resolved via git/hg diff.
+    Scm {
+        vcs: ScmVcs,
+        mergebase: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScmVcs {
+    Git,
+    Hg,
 }
 
 impl ClockSpec {
@@ -95,22 +106,35 @@ impl ClockSpec {
         if let Some(name) = s.strip_prefix("n:") {
             return ClockSpec::Named(name.to_owned());
         }
+        if let Some(scm) = s.strip_prefix("scm:") {
+            let (vcs, mergebase) = scm.split_once(':').unwrap_or((scm, ""));
+            let vcs = match vcs {
+                "git" => ScmVcs::Git,
+                "hg" | "sapling" | "sl" => ScmVcs::Hg,
+                _ => return ClockSpec::Epoch,
+            };
+            return ClockSpec::Scm {
+                vcs,
+                mergebase: mergebase.to_owned(),
+            };
+        }
         if let Ok(n) = s.parse::<u64>() {
             return ClockSpec::Tick(n);
         }
         ClockSpec::Epoch
     }
 
-    /// Tick comparison for `since` queries. A spec that points at a
+    /// Tick comparison for `since` queries.  A spec pointing at a
     /// different root instance (mismatched start/pid/root) resets to 0
     /// so the query returns every file — same as watchman.
     pub fn tick_against(&self, clock: &Clock) -> u64 {
         match self {
             ClockSpec::Epoch => 0,
-            // Named cursors are not yet implemented; treat as epoch so
-            // queries fall back to "everything", matching watchman's
-            // behaviour before a cursor is first populated.
-            ClockSpec::Named(_) => 0,
+            // Named and SCM cursors are orthogonal to the tick axis;
+            // they filter by path set, not by tick.  The query engine
+            // treats tick=0 as "consider every file" and then narrows
+            // down via the cursor's file set.
+            ClockSpec::Named(_) | ClockSpec::Scm { .. } => 0,
             ClockSpec::Tick(t) => *t,
             ClockSpec::Full {
                 start_time,

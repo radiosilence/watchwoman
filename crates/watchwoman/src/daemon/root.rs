@@ -78,6 +78,7 @@ pub struct Root {
     root_number_pool: Arc<AtomicU64>,
     subscriptions: RwLock<HashMap<String, SubscriptionSpec>>,
     triggers: RwLock<HashMap<String, Trigger>>,
+    cursors: RwLock<HashMap<String, u64>>,
 }
 
 pub enum WatcherCommand {
@@ -103,7 +104,29 @@ impl Root {
             root_number_pool,
             subscriptions: RwLock::new(HashMap::new()),
             triggers: RwLock::new(HashMap::new()),
+            cursors: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Return the tick a named cursor points at, or 0 if it's new.
+    /// Watchman's `n:cursor` clocks are "file-scoped tick memories": a
+    /// query with `since: "n:foo"` filters to files observed after the
+    /// cursor's last tick, and the query's completion advances the
+    /// cursor.
+    pub fn cursor_tick(&self, name: &str) -> u64 {
+        self.cursors.read().get(name).copied().unwrap_or(0)
+    }
+
+    pub fn set_cursor(&self, name: &str, tick: u64) {
+        self.cursors.write().insert(name.to_owned(), tick);
+    }
+
+    pub fn cursors(&self) -> Vec<(String, u64)> {
+        self.cursors
+            .read()
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect()
     }
 
     pub fn install_trigger(&self, t: Trigger) {

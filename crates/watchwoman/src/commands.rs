@@ -11,6 +11,7 @@ use crate::daemon::session::Session;
 use crate::daemon::state::DaemonState;
 
 pub mod clock;
+pub mod debug;
 pub mod info;
 pub mod query;
 pub mod state;
@@ -82,6 +83,10 @@ fn dispatch_inner(state: &Arc<DaemonState>, session: &Session, pdu: Value) -> Co
         "trigger" => trigger::trigger(state, args),
         "trigger-list" => trigger::trigger_list(state, args),
         "trigger-del" => trigger::trigger_del(state, args),
+        "debug-recrawl" => debug::recrawl(state, args),
+        "debug-ageout" => debug::ageout(state, args),
+        "debug-show-cursors" => debug::show_cursors(state, args),
+        "debug-poll-for-settle" => Ok(obj([("collected", Value::Bool(true))])),
         "shutdown-server" => {
             state.request_shutdown();
             let mut m = IndexMap::new();

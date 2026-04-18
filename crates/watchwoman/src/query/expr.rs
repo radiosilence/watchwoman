@@ -8,6 +8,7 @@
 use std::path::Path;
 
 use globset::GlobMatcher;
+use regex::Regex;
 use watchwoman_protocol::Value;
 
 use crate::commands::CommandError;
@@ -28,6 +29,10 @@ pub enum Expr {
     },
     Match {
         matcher: GlobMatcher,
+        scope: MatchScope,
+    },
+    Pcre {
+        regex: Regex,
         scope: MatchScope,
     },
     Suffix(Vec<String>),
@@ -149,6 +154,24 @@ fn parse_array(items: &[Value]) -> Result<Expr, CommandError> {
                 .compile_matcher();
             Expr::Match { matcher, scope }
         }
+        "pcre" | "ipcre" => {
+            let case_insensitive = head == "ipcre";
+            let pattern = rest
+                .first()
+                .and_then(Value::as_str)
+                .ok_or_else(|| CommandError::BadArgs("`pcre` requires a pattern".into()))?;
+            let scope = rest
+                .get(1)
+                .and_then(Value::as_str)
+                .map(parse_scope)
+                .transpose()?
+                .unwrap_or(MatchScope::Basename);
+            let regex = regex::RegexBuilder::new(pattern)
+                .case_insensitive(case_insensitive)
+                .build()
+                .map_err(|e| CommandError::BadArgs(format!("bad pcre pattern: {e}")))?;
+            Expr::Pcre { regex, scope }
+        }
         "suffix" => {
             let list = flatten_strings(rest)?;
             Expr::Suffix(list.into_iter().map(|s| s.to_ascii_lowercase()).collect())
@@ -256,6 +279,7 @@ fn flatten_strings(items: &[Value]) -> Result<Vec<String>, CommandError> {
 pub struct EvalCtx<'a> {
     pub clock: &'a crate::daemon::clock::Clock,
     pub rel: &'a Path,
+    pub case_sensitive: bool,
 }
 
 pub fn eval(expr: &Expr, entry: &FileEntry, ctx: &EvalCtx<'_>) -> bool {
@@ -271,7 +295,12 @@ pub fn eval(expr: &Expr, entry: &FileEntry, ctx: &EvalCtx<'_>) -> bool {
             names,
             scope,
             case_sensitive,
-        } => match_name(ctx.rel, names, *scope, *case_sensitive),
+        } => match_name(
+            ctx.rel,
+            names,
+            *scope,
+            *case_sensitive && ctx.case_sensitive,
+        ),
         Expr::Match { matcher, scope } => match scope {
             MatchScope::Basename => ctx
                 .rel
@@ -279,6 +308,17 @@ pub fn eval(expr: &Expr, entry: &FileEntry, ctx: &EvalCtx<'_>) -> bool {
                 .is_some_and(|b| matcher.is_match(Path::new(b))),
             MatchScope::Wholename => matcher.is_match(ctx.rel),
         },
+        Expr::Pcre { regex, scope } => {
+            let hay: String = match scope {
+                MatchScope::Basename => ctx
+                    .rel
+                    .file_name()
+                    .map(|b| b.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                MatchScope::Wholename => ctx.rel.to_string_lossy().to_string(),
+            };
+            regex.is_match(&hay)
+        }
         Expr::Suffix(exts) => ctx
             .rel
             .extension()
@@ -291,7 +331,7 @@ pub fn eval(expr: &Expr, entry: &FileEntry, ctx: &EvalCtx<'_>) -> bool {
         Expr::Dirname {
             path,
             case_sensitive,
-        } => match_dirname(ctx.rel, path, *case_sensitive),
+        } => match_dirname(ctx.rel, path, *case_sensitive && ctx.case_sensitive),
     }
 }
 

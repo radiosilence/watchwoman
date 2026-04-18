@@ -16,6 +16,8 @@ pub struct FileEntry {
     pub kind: FileKind,
     pub size: u64,
     pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
     pub mtime_ns: i128,
     pub ctime_ns: i128,
     pub mtime_ms: i64,
@@ -75,15 +77,24 @@ impl FileEntry {
         let ctime_ns = metadata_time_ns(md.created().ok().or_else(|| md.modified().ok()));
 
         #[cfg(unix)]
-        let (mode, ino, dev, nlink) = (md.mode(), md.ino(), md.dev(), md.nlink());
+        let (mode, uid, gid, ino, dev, nlink) = (
+            md.mode(),
+            md.uid(),
+            md.gid(),
+            md.ino(),
+            md.dev(),
+            md.nlink(),
+        );
         #[cfg(not(unix))]
-        let (mode, ino, dev, nlink) = (0, 0, 0, 0);
+        let (mode, uid, gid, ino, dev, nlink) = (0, 0, 0, 0, 0, 0);
 
         Self {
             exists: true,
             kind,
             size: md.len(),
             mode,
+            uid,
+            gid,
             mtime_ns,
             ctime_ns,
             mtime_ms: (mtime_ns / 1_000_000) as i64,

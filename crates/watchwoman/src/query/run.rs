@@ -18,10 +18,12 @@ pub struct QuerySpec {
     pub fields: Vec<Field>,
     pub generators: Generators,
     pub since: Option<ClockSpec>,
+    pub relative_root: Option<std::path::PathBuf>,
     pub empty_on_fresh_instance: bool,
     pub always_include_directories: bool,
     pub dedup_results: bool,
     pub omit_changed_files: bool,
+    pub case_sensitive: bool,
 }
 
 #[derive(Debug)]
@@ -50,11 +52,16 @@ pub fn parse_spec(raw: &Value) -> Result<QuerySpec, CommandError> {
         Value::String(s) => Some(ClockSpec::parse(s)),
         _ => None,
     });
+    let relative_root = map
+        .get("relative_root")
+        .and_then(Value::as_str)
+        .map(std::path::PathBuf::from);
     Ok(QuerySpec {
         expression,
         fields,
         generators,
         since,
+        relative_root,
         empty_on_fresh_instance: map
             .get("empty_on_fresh_instance")
             .and_then(Value::as_bool)
@@ -71,15 +78,27 @@ pub fn parse_spec(raw: &Value) -> Result<QuerySpec, CommandError> {
             .get("omit_changed_files")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        case_sensitive: map
+            .get("case_sensitive")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
     })
 }
 
 pub fn run(root: &Arc<Root>, spec: &QuerySpec) -> QueryResult {
+    // Named-cursor resolution.  Captured before we read the tree so
+    // the cursor advances atomically with the query.
+    let (cursor_since, cursor_name) = resolve_named_cursor(root, spec);
+    let scm_allowed = resolve_scm_set(root, spec);
+
     let tree = root.tree.read();
     let mut files = Vec::new();
-    let since_tick = spec.since.as_ref().map(|s| s.tick_against(&root.clock));
+    let since_tick =
+        cursor_since.or_else(|| spec.since.as_ref().map(|s| s.tick_against(&root.clock)));
     let is_fresh_instance = since_tick.is_none();
     let include_dirs = spec.always_include_directories;
+
+    let rel_root = spec.relative_root.as_deref();
 
     if !(is_fresh_instance && spec.empty_on_fresh_instance) {
         for (rel, entry) in tree.iter() {
@@ -93,17 +112,34 @@ pub fn run(root: &Arc<Root>, spec: &QuerySpec) -> QueryResult {
                 // `always_include_directories` is set.
                 continue;
             }
-            if !spec.generators.accept(rel) {
+            // relative_root narrows the query to a subdir of the
+            // watched root. Paths in results are also stripped of that
+            // prefix so callers receive root-relative names.
+            let display_rel = if let Some(base) = rel_root {
+                match rel.strip_prefix(base) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                }
+            } else {
+                rel
+            };
+            if !spec.generators.accept(display_rel) {
                 continue;
+            }
+            if let Some(allowed) = &scm_allowed {
+                if !allowed.contains(rel) && !allowed.contains(display_rel) {
+                    continue;
+                }
             }
             let ctx = expr::EvalCtx {
                 clock: &root.clock,
-                rel,
+                rel: display_rel,
+                case_sensitive: spec.case_sensitive,
             };
             if expr::eval(&spec.expression, entry, &ctx) {
                 files.push(field::render_row(
                     &root.path,
-                    rel,
+                    display_rel,
                     entry,
                     &spec.fields,
                     &root.clock,
@@ -112,10 +148,37 @@ pub fn run(root: &Arc<Root>, spec: &QuerySpec) -> QueryResult {
         }
     }
 
+    // After a query resolves, any named cursor advances to the tick
+    // we just observed so the next query only sees newer changes.
+    if let Some(name) = cursor_name {
+        root.set_cursor(&name, root.clock.current_tick());
+    }
+
     QueryResult {
         files,
         clock: root.clock_string(),
         is_fresh_instance,
+    }
+}
+
+fn resolve_named_cursor(root: &Arc<Root>, spec: &QuerySpec) -> (Option<u64>, Option<String>) {
+    if let Some(ClockSpec::Named(name)) = &spec.since {
+        let tick = root.cursor_tick(name);
+        (Some(tick), Some(name.clone()))
+    } else {
+        (None, None)
+    }
+}
+
+fn resolve_scm_set(
+    root: &Arc<Root>,
+    spec: &QuerySpec,
+) -> Option<std::collections::HashSet<std::path::PathBuf>> {
+    match &spec.since {
+        Some(ClockSpec::Scm { vcs, mergebase }) => {
+            crate::daemon::scm::changed_paths(&root.path, *vcs, mergebase)
+        }
+        _ => None,
     }
 }
 

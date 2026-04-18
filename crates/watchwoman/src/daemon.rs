@@ -9,6 +9,7 @@ use anyhow::Context;
 
 pub mod clock;
 pub mod root;
+pub mod scm;
 pub mod server;
 pub mod session;
 pub mod state;
