@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 rust-version = "1.82"
 authors = ["James Cleveland <jc@blit.cc>"]
@@ -16,7 +16,7 @@ repository = "https://github.com/radiosilence/watchwoman"
 description = "A drop-in watchman replacement that doesn't eat your RAM."
 
 [workspace.dependencies]
-watchwoman-protocol = { path = "crates/watchwoman-protocol", version = "0.4.0" }
+watchwoman-protocol = { path = "crates/watchwoman-protocol", version = "0.4.1" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

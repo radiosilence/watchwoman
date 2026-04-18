@@ -241,7 +241,7 @@ fn agent_plist_path() -> PathBuf {
 #[cfg(target_os = "macos")]
 fn install_launch_agent() -> anyhow::Result<ExitCode> {
     let plist = agent_plist_path();
-    let exe = std::env::current_exe().context("resolving current_exe")?;
+    let exe = resolve_stable_binary()?;
     let log = watchwoman_state_dir()?.join("watchwoman.log");
     let sock = watchwoman_state_dir()?.join("sock");
     if let Some(parent) = log.parent() {
@@ -322,6 +322,53 @@ fn uninstall_launch_agent() -> anyhow::Result<ExitCode> {
         println!("No LaunchAgent installed for {AGENT_LABEL}.");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// LaunchAgents are loaded once at login and exec their `ProgramArguments`
+/// verbatim.  If we baked a version-pinned path like
+/// `~/.local/share/mise/installs/github-.../0.4.0/watchman` into the plist,
+/// the next `mise upgrade` would silently orphan the agent.  Prefer, in order:
+///
+///   1. The mise **shim** path (stable across version bumps).
+///   2. The brew prefix (`/opt/homebrew/bin/watchman`, `/usr/local/bin/watchman`).
+///   3. `$HOME/.cargo/bin/watchman`.
+///   4. The running process (last resort; warn if it's a `target/` dev build).
+#[cfg(target_os = "macos")]
+fn resolve_stable_binary() -> anyhow::Result<PathBuf> {
+    let running = std::env::current_exe().context("resolving current_exe")?;
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+
+    let candidates: Vec<PathBuf> = [
+        home.as_ref()
+            .map(|h| h.join(".local/share/mise/shims/watchman")),
+        home.as_ref()
+            .map(|h| h.join(".local/share/mise/shims/watchwoman")),
+        Some(PathBuf::from("/opt/homebrew/bin/watchman")),
+        Some(PathBuf::from("/opt/homebrew/bin/watchwoman")),
+        Some(PathBuf::from("/usr/local/bin/watchman")),
+        Some(PathBuf::from("/usr/local/bin/watchwoman")),
+        home.as_ref().map(|h| h.join(".cargo/bin/watchman")),
+        home.as_ref().map(|h| h.join(".cargo/bin/watchwoman")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|p| p.exists())
+    .collect();
+
+    if let Some(best) = candidates.first() {
+        return Ok(best.clone());
+    }
+
+    let running_str = running.to_string_lossy();
+    if running_str.contains("/target/release/") || running_str.contains("/target/debug/") {
+        eprintln!(
+            "warning: no stable watchwoman found on $PATH; using the running\n  \
+             dev binary {}.  Re-run `watchwoman install-agent` after a real\n  \
+             install (brew / mise / cargo) to stabilise the plist.",
+            running.display()
+        );
+    }
+    Ok(running)
 }
 
 #[cfg(target_os = "macos")]
