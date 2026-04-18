@@ -1,0 +1,21 @@
+[package]
+name = "watchwoman-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Black-box parity tests against watchman/watchwoman."
+publish = false
+
+[dependencies]
+watchwoman-protocol.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+indexmap = { version = "2", features = ["serde"] }
+
+[dev-dependencies]
+nix.workspace = true

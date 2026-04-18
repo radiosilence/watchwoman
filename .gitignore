@@ -1,0 +1,14 @@
+/target
+/reference
+**/*.rs.bk
+*.pdb
+.DS_Store
+.direnv/
+.envrc.local
+/tmp/
+/.vscode/
+/.idea/
+/.claude/settings.local.json
+
+# Recorded fixtures we regenerate locally
+/tests/fixtures/generated/
