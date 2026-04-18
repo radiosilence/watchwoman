@@ -157,9 +157,7 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build
-        run: |
-          cargo build --release --target ${{ matrix.target }} \
-            --bin watchwoman --bin watchman
+        run: cargo build --release --target ${{ matrix.target }} --bins -p watchwoman
 
       - name: Package
         id: package
@@ -168,8 +166,11 @@ jobs:
           VERSION="${{ needs.check-version.outputs.version }}"
           NAME="watchwoman-${VERSION}-${{ matrix.target }}"
           mkdir -p "dist/${NAME}"
-          cp "target/${{ matrix.target }}/release/watchwoman" "dist/${NAME}/"
-          cp "target/${{ matrix.target }}/release/watchman" "dist/${NAME}/"
+          # Ship every binary target built by the watchwoman crate:
+          # watchwoman + watchman alias + watchman-wait + watchman-make.
+          for bin in watchwoman watchman watchman-wait watchman-make; do
+            cp "target/${{ matrix.target }}/release/${bin}" "dist/${NAME}/"
+          done
           cp README.md CHANGELOG.md LICENSE* "dist/${NAME}/" 2>/dev/null || true
           tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
           (cd dist && shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
@@ -356,8 +357,9 @@ jobs:
             end
 
             def install
-              bin.install "watchwoman"
-              bin.install "watchman"
+              %w[watchwoman watchman watchman-wait watchman-make].each do |b|
+                bin.install b
+              end
             end
 
             def caveats

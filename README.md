@@ -154,15 +154,105 @@ FSEvents/inotify/kqueue. A Windows port would mean named pipes and
 ReadDirectoryChangesW — possible, not scheduled. If you need
 watchman on Windows, use watchman on Windows.
 
-## Status
+## Parity
 
-Pre-alpha but feature-complete for every tool I've tested against.
-Full parity matrix lives in [`docs/PARITY.md`](./docs/PARITY.md) —
-ticked items have integration tests or a smoke-test against real
-watchman. Known gaps are listed there, not hidden.
+Ticked items have integration coverage or a smoke-test against real
+watchman. Unticked items are either on the list or explicitly out of
+scope — flagged as such with a reason. [Issue #1](https://github.com/radiosilence/watchwoman/issues/1)
+tracks the open slice.
 
-[Issue #1](https://github.com/radiosilence/watchwoman/issues/1)
-tracks everything still open.
+### Wire protocol
+
+- [x] Newline-delimited JSON PDUs (client + server).
+- [x] BSER v1 encoder and decoder.
+- [x] BSER v2 framing (magic + capability bitmask + length-prefixed payload).
+- [x] Template encoding with SKIP tags for absent rows.
+- [x] First-byte sniffing on the daemon.
+- [ ] BSER capability bits (`DISABLE_UNICODE`, `DISABLE_UNICODE_FOR_ERRORS`) — accepted on the wire, not yet acted on.
+- [ ] `watchman-replicate-subscription` — separate binary, deferred.
+
+### CLI
+
+- [x] `argv[0]` dispatch — `watchman` alias picks up the binary.
+- [x] `-j` / `--json-command` — stdin PDU mode.
+- [x] `-p` / `--persistent` — stay connected for unilateral updates.
+- [x] `--no-pretty` compact JSON output.
+- [x] `--sockname` (env: `$WATCHMAN_SOCK`).
+- [x] `completion <shell>` generator.
+- [x] Auto-spawn daemon on missing socket.
+- [ ] `-o` / `--logfile` — daemon traces to stderr, no logfile ceremony.
+- [ ] `--pidfile` — socket presence is the liveness signal.
+- [ ] `--inetd` — unix-socket-only is a deliberate choice.
+
+### Commands
+
+- [x] `get-sockname`, `get-pid`, `version`, `list-capabilities`.
+- [x] `watch`, `watch-project`, `watch-list`, `watch-del`, `watch-del-all`.
+- [x] `clock` — with SCM-aware extension.
+- [x] `query`, `find`, `since`.
+- [x] `subscribe`, `unsubscribe`, `flush-subscriptions`.
+- [x] `state-enter`, `state-leave`.
+- [x] `trigger`, `trigger-list`, `trigger-del`.
+- [ ] Trigger persistence across daemon restart — in-memory only for now.
+- [x] `get-config`, `log`, `log-level`.
+- [x] `shutdown-server`.
+- [x] `debug-ageout`, `debug-recrawl`, `debug-show-cursors`, `debug-poll-for-settle`.
+- [ ] `debug-drop-privs` — refuse; we never run as root by design.
+
+### Query language
+
+**Expressions**
+
+- [x] `allof`, `anyof`, `not`, `true`, `false`.
+- [x] `name`, `iname`.
+- [x] `match`, `imatch` (glob).
+- [x] `pcre`, `ipcre` (regex).
+- [x] `suffix`, `type`, `size`, `exists`, `empty`, `since`, `dirname`, `idirname`.
+
+**Generators**
+
+- [x] `glob`, `suffix`, `path`, `since`, `all`.
+- [x] `relative_root` — queries rooted at a subdir of the watched tree.
+
+**Spec options**
+
+- [x] `fields`, `expression`, `since`.
+- [x] `case_sensitive`.
+- [x] `dedup_results` in subscriptions.
+- [x] `empty_on_fresh_instance`, `always_include_directories`, `omit_changed_files`.
+- [ ] `sync_timeout`, `lock_timeout`, `settle_period`, `settle_timeout` — accepted, but we settle in 5 ms anyway.
+
+**Fields**
+
+- [x] `name`, `exists`, `type`, `new`.
+- [x] `size`, `mode`, `uid`, `gid`, `ino`, `dev`, `nlink`.
+- [x] `mtime`, `mtime_ms`, `mtime_ns`, `ctime`, `ctime_ms`, `ctime_ns`.
+- [x] `cclock`, `oclock`, `symlink_target`.
+- [x] `content.sha1hex` — streamed hash on demand.
+
+### Clocks
+
+- [x] `c:<start>:<pid>:<root>:<tick>` — opaque clock string.
+- [x] `<integer>` — bare tick number.
+- [x] `n:<cursor>` — named cursors, advance atomically with each query.
+- [x] `scm:git:<mergebase>` — git-aware clock.
+- [x] `scm:hg:<mergebase>` — Mercurial / Sapling-aware clock.
+
+### Watchers
+
+- [x] FSEvents on macOS (recursive, one registration per root).
+- [x] inotify on Linux (coalesced at 5 ms).
+- [x] kqueue on the BSDs (via `notify`).
+- [ ] Windows `ReadDirectoryChangesW` — out of scope.
+
+### Companion binaries
+
+- [x] `watchwoman` (the entrypoint).
+- [x] `watchman` (argv-dispatched alias).
+- [x] `watchman-wait` — blocks until a matching file changes, prints names.
+- [x] `watchman-make` — re-runs a command on matching changes, throttled.
+- [ ] `watchman-diag` — deferred; `watchman --version --capabilities` covers the ask.
+- [ ] `watchmanctl` — deferred.
 
 ## Development
 
