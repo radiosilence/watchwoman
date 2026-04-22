@@ -1,0 +1,158 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Run tests
+        run: cargo test --workspace --all-features
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Lint with Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  format:
+    name: Check Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # Release artifacts are built on every PR and every push to main —
+  # not only when the version bumps.  A musl / linux-arm break on a
+  # feature PR now fails CI instead of surfacing after a release tag.
+  #
+  # The CD workflow (`.github/workflows/cd.yml`) triggers on CI
+  # completion, checks whether the version moved, and — if it did —
+  # downloads these artifacts directly.  No rebuild in CD.
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    # Windows is intentionally absent: watchwoman is built on unix
+    # sockets + nix-flavoured syscalls (setsid, inotify/FSEvents,
+    # passwd lookup).  A proper Windows port needs named pipes and a
+    # different watcher backend — tracked separately, not blocked on
+    # this pipeline.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS — both slices built on the arm64 runner.
+          # macos-13 (Intel) has a chronic queue backlog on GitHub's
+          # free tier; cross-compiling from arm64 keeps the pipeline
+          # unblocked and all SDKs are universal anyway.
+          - { os: macos-latest, target: aarch64-apple-darwin, platform: macos-arm64 }
+          - { os: macos-latest, target: x86_64-apple-darwin,  platform: macos-amd64 }
+          # Linux (glibc) — dynamic
+          - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  platform: linux-amd64-gnu  }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, platform: linux-arm64-gnu  }
+          # Linux (musl) — static, portable across distros
+          - { os: ubuntu-latest,    target: x86_64-unknown-linux-musl, platform: linux-amd64-musl }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, platform: linux-arm64-musl }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install musl toolchain
+        if: endsWith(matrix.target, '-musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Read workspace version
+        id: ver
+        shell: bash
+        run: |
+          VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --bins -p watchwoman
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          NAME="watchwoman-${VERSION}-${{ matrix.target }}"
+          mkdir -p "dist/${NAME}"
+          # Ship every binary target built by the watchwoman crate:
+          # watchwoman + watchman alias + watchman-wait + watchman-make
+          # + watchman-diag + watchmanctl.
+          for bin in watchwoman watchman watchman-wait watchman-make watchman-diag watchmanctl; do
+            cp "target/${{ matrix.target }}/release/${bin}" "dist/${NAME}/"
+          done
+          cp README.md CHANGELOG.md LICENSE* "dist/${NAME}/" 2>/dev/null || true
+          tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
+          (cd dist && shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
+          echo "artifact=dist/${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "checksum=dist/${NAME}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # Name is stable across runs and contains only the platform
+          # — CD globs `watchwoman-*` to gather them all.
+          name: watchwoman-${{ matrix.platform }}
+          path: |
+            ${{ steps.package.outputs.artifact }}
+            ${{ steps.package.outputs.checksum }}
+          retention-days: 30
