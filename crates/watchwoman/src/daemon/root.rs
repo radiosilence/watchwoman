@@ -2,8 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
 use tokio::sync::{broadcast, mpsc};
@@ -86,6 +87,16 @@ pub struct Root {
     subscriptions: RwLock<HashMap<String, SubscriptionSpec>>,
     triggers: RwLock<HashMap<String, Trigger>>,
     cursors: RwLock<HashMap<String, u64>>,
+    /// Unix timestamp the root was registered, for uptime and
+    /// "has this watch ever been used" signals.
+    registered_at: u64,
+    /// Unix timestamp of the last command that touched this root.
+    /// Advanced on every `DaemonState::root()` lookup; drives the
+    /// stale-watch GC.
+    last_used: AtomicU64,
+    /// Consecutive GC ticks that saw the root missing from disk.
+    /// Two in a row earns a reap; any successful stat resets to zero.
+    missing_ticks: AtomicU32,
 }
 
 pub enum WatcherCommand {
@@ -102,6 +113,7 @@ impl Root {
         ignore_dirs: Vec<String>,
     ) -> Self {
         let (tx, _rx) = broadcast::channel(256);
+        let now = unix_now();
         Self {
             path,
             root_number,
@@ -116,7 +128,53 @@ impl Root {
             subscriptions: RwLock::new(HashMap::new()),
             triggers: RwLock::new(HashMap::new()),
             cursors: RwLock::new(HashMap::new()),
+            registered_at: now,
+            last_used: AtomicU64::new(now),
+            missing_ticks: AtomicU32::new(0),
         }
+    }
+
+    /// Mark this root as just-used.  Called from the hot path on every
+    /// command that resolves a root, so the GC can tell idle watches
+    /// from active ones without bookkeeping at every call site.
+    pub fn touch(&self) {
+        self.last_used.store(unix_now(), Ordering::Relaxed);
+    }
+
+    pub fn registered_at(&self) -> u64 {
+        self.registered_at
+    }
+
+    pub fn last_used(&self) -> u64 {
+        self.last_used.load(Ordering::Relaxed)
+    }
+
+    /// Seconds since the last command touched this root (>=0).
+    pub fn idle_seconds(&self) -> u64 {
+        unix_now().saturating_sub(self.last_used())
+    }
+
+    /// Record a GC tick that saw the root missing from disk.  Returns
+    /// the new consecutive-miss count.
+    pub fn mark_missing(&self) -> u32 {
+        self.missing_ticks.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// Clear the consecutive-miss counter: the root is back.
+    pub fn mark_present(&self) {
+        self.missing_ticks.store(0, Ordering::Release);
+    }
+
+    pub fn missing_ticks(&self) -> u32 {
+        self.missing_ticks.load(Ordering::Acquire)
+    }
+
+    pub fn subscription_count(&self) -> usize {
+        self.subscriptions.read().len()
+    }
+
+    pub fn trigger_count(&self) -> usize {
+        self.triggers.read().len()
     }
 
     /// Return the tick a named cursor points at, or 0 if it's new.
@@ -311,6 +369,15 @@ pub enum PathChange {
     Remove {
         rel: PathBuf,
     },
+}
+
+/// Current unix epoch seconds, clamped to 0 on the (impossible)
+/// branch where the system clock is before the epoch.
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Stable directory slug for a root path — ASCII-safe, no slashes.

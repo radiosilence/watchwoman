@@ -155,6 +155,16 @@ pub enum Command {
     LogLevel { level: Option<String> },
     /// Write a message to the server log.
     Log { level: String, message: String },
+    /// Print a human-readable daemon status report: uptime, RSS, per-root
+    /// file counts, idle time, health, and the last 64 GC reaps.
+    ///
+    /// Use `--json` for scripting; the server always speaks JSON over
+    /// the wire and the CLI just formats it.
+    Status {
+        /// Emit the raw JSON response instead of the formatted report.
+        #[arg(long)]
+        json: bool,
+    },
     /// Tear the daemon down.
     ShutdownServer,
     /// Send an arbitrary JSON PDU and print the response.
@@ -419,6 +429,7 @@ pub fn run() -> anyhow::Result<ExitCode> {
         Command::InstallAgent => install_launch_agent(),
         #[cfg(target_os = "macos")]
         Command::UninstallAgent => uninstall_launch_agent(),
+        Command::Status { json } => run_status(&sock_path, cli.no_spawn, json),
         other => run_client(
             &other,
             &sock_path,
@@ -426,6 +437,207 @@ pub fn run() -> anyhow::Result<ExitCode> {
             cli.no_spawn,
             cli.persistent,
         ),
+    }
+}
+
+/// Dispatch `status` — the server always replies in JSON, we either
+/// pretty-print it as a human report or pass it straight through.
+fn run_status(sock_path: &Path, no_spawn: bool, want_json: bool) -> anyhow::Result<ExitCode> {
+    let pdu = Value::Array(vec![Value::String("status".into())]);
+    let stream = connect_or_spawn(sock_path, no_spawn)?;
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    let mut writer = stream.try_clone()?;
+    json::encode_pdu(&mut writer, &pdu)?;
+    writer.flush()?;
+    let mut reader = std::io::BufReader::new(stream);
+    let response = json::read_pdu(&mut reader)?.context("daemon closed connection early")?;
+
+    let err_present = response
+        .as_object()
+        .is_some_and(|o| o.contains_key("error"));
+    if want_json || err_present {
+        print_response(&response, false)?;
+    } else {
+        print_status_report(&response)?;
+    }
+    Ok(if err_present {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+fn print_status_report(v: &Value) -> anyhow::Result<()> {
+    let obj = match v.as_object() {
+        Some(o) => o,
+        None => {
+            print_response(v, false)?;
+            return Ok(());
+        }
+    };
+    let get_i = |k: &str| obj.get(k).and_then(Value::as_i64).unwrap_or(0);
+    let get_s = |k: &str| obj.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
+
+    let version = get_s("version");
+    let pid = get_i("pid");
+    let uptime = get_i("uptime_seconds");
+    let sock = get_s("sockname");
+    let rss = get_i("rss_bytes");
+    let user_ms = get_i("user_cpu_ms");
+    let sys_ms = get_i("system_cpu_ms");
+    let total_files = get_i("total_tracked_files");
+    let total_subs = get_i("total_subscriptions");
+    let total_triggers = get_i("total_triggers");
+
+    let empty: &[Value] = &[];
+    let roots = obj.get("roots").and_then(Value::as_array).unwrap_or(empty);
+    let reaped = obj.get("reaped").and_then(Value::as_array).unwrap_or(empty);
+
+    let mut out = io::stdout().lock();
+    writeln!(
+        out,
+        "watchwoman {version}  (pid {pid}, up {})",
+        format_duration(uptime as u64)
+    )?;
+    writeln!(out, "socket:  {sock}")?;
+    writeln!(
+        out,
+        "memory:  {}   cpu: {} user / {} system",
+        format_bytes(rss as u64),
+        format_duration_ms(user_ms as u64),
+        format_duration_ms(sys_ms as u64)
+    )?;
+    writeln!(
+        out,
+        "roots:   {} watched · {} files · {} subs · {} triggers",
+        roots.len(),
+        format_count(total_files as u64),
+        total_subs,
+        total_triggers
+    )?;
+    writeln!(out)?;
+
+    if roots.is_empty() {
+        writeln!(out, "(no roots watched)")?;
+    } else {
+        writeln!(
+            out,
+            "{:<60} {:>10} {:>8} {:>5} {:>5}  HEALTH",
+            "ROOT", "FILES", "IDLE", "SUBS", "TRIG"
+        )?;
+        for r in roots {
+            let Some(ro) = r.as_object() else { continue };
+            let path = ro.get("path").and_then(Value::as_str).unwrap_or("?");
+            let num = ro.get("num_files").and_then(Value::as_i64).unwrap_or(0);
+            let idle = ro.get("idle_seconds").and_then(Value::as_i64).unwrap_or(0);
+            let subs = ro.get("subscriptions").and_then(Value::as_i64).unwrap_or(0);
+            let trig = ro.get("triggers").and_then(Value::as_i64).unwrap_or(0);
+            let health = ro.get("health").and_then(Value::as_str).unwrap_or("?");
+            writeln!(
+                out,
+                "{:<60} {:>10} {:>8} {:>5} {:>5}  {}",
+                truncate_left(path, 60),
+                format_count(num as u64),
+                format_duration(idle as u64),
+                subs,
+                trig,
+                health
+            )?;
+        }
+    }
+
+    if !reaped.is_empty() {
+        writeln!(out)?;
+        writeln!(
+            out,
+            "garbage-collected ({} recent, newest first):",
+            reaped.len()
+        )?;
+        for r in reaped.iter().rev().take(10) {
+            let Some(ro) = r.as_object() else { continue };
+            let path = ro.get("path").and_then(Value::as_str).unwrap_or("?");
+            let reason = ro.get("reason").and_then(Value::as_str).unwrap_or("?");
+            let at = ro.get("at_unix").and_then(Value::as_i64).unwrap_or(0);
+            let ago = now_unix().saturating_sub(at as u64);
+            writeln!(
+                out,
+                "  [{}] {}  ({} ago)",
+                reason,
+                truncate_left(path, 70),
+                format_duration(ago)
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn format_bytes(n: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if n >= GB {
+        format!("{:.1} GB", n as f64 / GB as f64)
+    } else if n >= MB {
+        format!("{:.0} MB", n as f64 / MB as f64)
+    } else if n >= KB {
+        format!("{:.0} KB", n as f64 / KB as f64)
+    } else {
+        format!("{n} B")
+    }
+}
+
+fn format_count(n: u64) -> String {
+    // Thousands separators without pulling in a number-formatting dep.
+    let s = n.to_string();
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(bytes.len() + bytes.len() / 3);
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(*b as char);
+    }
+    out
+}
+
+fn format_duration(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    } else {
+        format!("{}d{:02}h", secs / 86_400, (secs % 86_400) / 3600)
+    }
+}
+
+fn format_duration_ms(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else {
+        format_duration(ms / 1000)
+    }
+}
+
+/// Truncate from the *left* with an ellipsis — root paths are usually
+/// differentiated by their tail (`…/agent-af8a4323`), so keeping the
+/// right-hand side is more useful than trimming the end.
+fn truncate_left(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        s.to_owned()
+    } else {
+        let tail: String = chars[chars.len() - (max - 1)..].iter().collect();
+        format!("…{tail}")
     }
 }
 
@@ -549,6 +761,7 @@ fn build_pdu(cmd: &Command) -> anyhow::Result<Value> {
         Command::InstallAgent | Command::UninstallAgent => {
             unreachable!("handled by caller")
         }
+        Command::Status { .. } => unreachable!("handled by run_status"),
         Command::GetSockname => parts.push(Value::String("get-sockname".into())),
         Command::GetPid => parts.push(Value::String("get-pid".into())),
         Command::Version { required, optional } => {

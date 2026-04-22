@@ -79,6 +79,7 @@ fn dispatch_inner(state: &Arc<DaemonState>, session: &Session, pdu: Value) -> Co
         "get-config" => info::get_config(args),
         "log-level" => info::log_level(args),
         "log" => info::log(args),
+        "status" => info::status(state),
         "watch" => watch::watch(state, args),
         "watch-project" => watch::watch_project(state, args),
         "watch-list" => watch::watch_list(state),
@@ -112,6 +113,12 @@ fn dispatch_inner(state: &Arc<DaemonState>, session: &Session, pdu: Value) -> Co
         "debug-symlink-target-cache" => Ok(obj([("entries", Value::Array(vec![]))])),
         "debug-fsevents-inject-drop" => Ok(obj([("injected", Value::Bool(false))])),
         "debug-kqueue-and-fsevents-recrawl" => debug::recrawl(state, args),
+        // Not documented; exists so integration tests can force a GC
+        // sweep without waiting for the 60 s timer.
+        "debug-gc-tick" => {
+            crate::daemon::gc::sweep(state);
+            Ok(obj([("swept", Value::Bool(true))]))
+        }
         "debug-drop-privs" => Err(CommandError::BadArgs(
             "debug-drop-privs is refused by design — watchwoman doesn't run as root".into(),
         )),
