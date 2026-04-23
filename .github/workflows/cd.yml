@@ -1,75 +1,33 @@
-name: CI/CD
+name: CD
 
+# Fires whenever CI finishes on main.  We gate publishing on the
+# workspace version having strictly moved past the latest GitHub
+# release — no rebuild, we just consume the tarballs CI already
+# produced.  Artifacts from the triggering CI run are fetched
+# cross-workflow via `actions/download-artifact`'s `run-id` mode.
+#
+# PRs never reach CD because `workflow_run` only fires for the
+# default branch, and `check-version` gates on that anyway.
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
 
 env:
-  CARGO_TERM_COLOR: always
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
-        with:
-          toolchain: stable
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-
-      - name: Run tests
-        run: cargo test --workspace --all-features
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
-        with:
-          toolchain: stable
-          components: clippy
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-
-      - name: Lint with Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-  format:
-    name: Check Formatting
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
-        with:
-          toolchain: stable
-          components: rustfmt
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
   check-version:
     name: Check Version
     runs-on: ubuntu-latest
-    needs: [test, lint, format]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: >
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success'
     outputs:
       should_release: ${{ steps.check.outputs.should_release }}
       version: ${{ steps.check.outputs.version }}
@@ -77,128 +35,75 @@ jobs:
       major_minor: ${{ steps.check.outputs.major_minor }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # Check out the commit CI actually built, not the tip of
+          # main at the time this workflow fires — avoids a race when
+          # someone pushes twice in quick succession.
+          ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Check if version changed
+      - name: Compare workspace version to latest release
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Workspace version lives in the root Cargo.toml under
-          # [workspace.package]; all member crates inherit it.
-          CURRENT_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          echo "Current version: $CURRENT_VERSION"
+          set -euo pipefail
+          CURRENT=$(grep -E '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "Workspace version: $CURRENT"
 
-          # Tags are a side-effect of releases; use the releases API as
-          # the source of truth so deleted tags don't accidentally
-          # re-trigger a build.
+          # Releases API is the source of truth; tags can be force-pushed.
           LATEST_RELEASE=$(gh release list --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null || echo "")
-          LATEST_VERSION=${LATEST_RELEASE#v}
-          echo "Latest release: ${LATEST_VERSION:-<none>}"
+          LATEST=${LATEST_RELEASE#v}
+          echo "Latest release:    ${LATEST:-<none>}"
 
-          if [ -z "$LATEST_RELEASE" ] || [ "$CURRENT_VERSION" != "$LATEST_VERSION" ]; then
-            echo "Version changed: ${LATEST_VERSION:-<none>} -> $CURRENT_VERSION"
-            echo "should_release=true" >> $GITHUB_OUTPUT
+          should_release=false
+          if [ -z "$LATEST" ]; then
+            should_release=true
           else
-            echo "Version unchanged"
-            echo "should_release=false" >> $GITHUB_OUTPUT
+            # Strict greater-than using `sort -V`.  If `LATEST` doesn't
+            # come before `CURRENT` in version order, don't release.
+            # Prevents downgrades and no-op re-releases.
+            if [ "$(printf '%s\n%s\n' "$LATEST" "$CURRENT" | sort -V | head -1)" = "$LATEST" ] \
+                && [ "$LATEST" != "$CURRENT" ]; then
+              should_release=true
+            fi
           fi
 
-          echo "version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-          MAJOR=$(echo $CURRENT_VERSION | cut -d. -f1)
-          MINOR=$(echo $CURRENT_VERSION | cut -d. -f2)
-          echo "major=${MAJOR}" >> $GITHUB_OUTPUT
-          echo "major_minor=${MAJOR}.${MINOR}" >> $GITHUB_OUTPUT
+          if [ "$should_release" = "true" ]; then
+            echo "Version moved: ${LATEST:-<none>} -> $CURRENT"
+          else
+            echo "Version unchanged or not strictly greater — no release."
+          fi
 
-  build-binaries:
-    name: Build ${{ matrix.platform }}
-    runs-on: ${{ matrix.os }}
-    needs: [check-version]
-    if: needs.check-version.outputs.should_release == 'true'
-    # Windows is intentionally absent: watchwoman is built on unix
-    # sockets + nix-flavoured syscalls (setsid, inotify/FSEvents,
-    # passwd lookup).  A proper Windows port needs named pipes and a
-    # different watcher backend — tracked separately, not blocked on
-    # this pipeline.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # macOS — both slices built on the arm64 runner.
-          # macos-13 (Intel) has a chronic queue backlog on GitHub's
-          # free tier; cross-compiling from arm64 keeps the pipeline
-          # unblocked and all SDKs are universal anyway.
-          - { os: macos-latest, target: aarch64-apple-darwin, platform: macos-arm64 }
-          - { os: macos-latest, target: x86_64-apple-darwin,  platform: macos-amd64 }
-          # Linux (glibc) — dynamic
-          - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  platform: linux-amd64-gnu  }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, platform: linux-arm64-gnu  }
-          # Linux (musl) — static, portable across distros
-          - { os: ubuntu-latest,    target: x86_64-unknown-linux-musl, platform: linux-amd64-musl }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, platform: linux-arm64-musl }
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install musl toolchain
-        if: endsWith(matrix.target, '-musl')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
-        with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --bins -p watchwoman
-
-      - name: Package
-        id: package
-        shell: bash
-        run: |
-          VERSION="${{ needs.check-version.outputs.version }}"
-          NAME="watchwoman-${VERSION}-${{ matrix.target }}"
-          mkdir -p "dist/${NAME}"
-          # Ship every binary target built by the watchwoman crate:
-          # watchwoman + watchman alias + watchman-wait + watchman-make.
-          for bin in watchwoman watchman watchman-wait watchman-make watchman-diag watchmanctl; do
-            cp "target/${{ matrix.target }}/release/${bin}" "dist/${NAME}/"
-          done
-          cp README.md CHANGELOG.md LICENSE* "dist/${NAME}/" 2>/dev/null || true
-          tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
-          (cd dist && shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
-          echo "artifact=dist/${NAME}.tar.gz" >> $GITHUB_OUTPUT
-          echo "checksum=dist/${NAME}.tar.gz.sha256" >> $GITHUB_OUTPUT
-
-      - name: Upload tarball
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: watchwoman-${{ needs.check-version.outputs.version }}-${{ matrix.platform }}
-          path: |
-            ${{ steps.package.outputs.artifact }}
-            ${{ steps.package.outputs.checksum }}
+          {
+            echo "should_release=${should_release}"
+            echo "version=${CURRENT}"
+            MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+            MINOR=$(echo "$CURRENT" | cut -d. -f2)
+            echo "major=${MAJOR}"
+            echo "major_minor=${MAJOR}.${MINOR}"
+          } >> "$GITHUB_OUTPUT"
 
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [check-version, build-binaries]
+    needs: [check-version]
     if: needs.check-version.outputs.should_release == 'true'
     permissions:
       contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Download all artifacts
+      # Cross-workflow artifact download: pulls straight from the CI
+      # run that triggered us.  No rebuild.
+      - name: Download CI artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: watchwoman-*
           path: artifacts
 
       - name: Stage release files
@@ -207,15 +112,19 @@ jobs:
           find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) \
             -exec cp {} release/ \;
           ls -la release/
+          # Sanity-check: six platforms × (tar.gz + sha256) = 12 files.
+          count=$(find release -type f | wc -l | tr -d ' ')
+          if [ "$count" -lt 12 ]; then
+            echo "expected >=12 release files, got $count — aborting" >&2
+            exit 1
+          fi
 
       - name: Create or update tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           TAG="v${{ needs.check-version.outputs.version }}"
-          # Tags are documentation, not gating — upsert, don't fail on
-          # re-push.  The release API is the source of truth.
-          git tag -f -a "${TAG}" -m "Release ${TAG}"
+          git tag -f -a "${TAG}" -m "Release ${TAG}" ${{ github.event.workflow_run.head_sha }}
           git push -f origin "${TAG}"
 
       - name: Create GitHub Release
@@ -236,6 +145,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
@@ -251,12 +162,12 @@ jobs:
         run: |
           if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
             echo "CARGO_TOKEN secret is not set; skipping crates.io publish." \
-              >> $GITHUB_STEP_SUMMARY
+              >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           # Dependency order: protocol first (no deps), then watchwoman.
           # watchwoman-tests has publish = false.  --no-verify because
-          # the crate already passed tests two jobs back.
+          # CI already built and tested this exact commit.
           cargo publish -p watchwoman-protocol --no-verify || {
             echo "protocol publish failed — likely already on crates.io; continuing"
           }
@@ -279,11 +190,13 @@ jobs:
     steps:
       - name: Check tap token
         id: gate
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          if [ -z "${{ secrets.HOMEBREW_TAP_TOKEN }}" ]; then
+          if [ -z "$TAP_TOKEN" ]; then
             echo "HOMEBREW_TAP_TOKEN not set; skipping tap update." \
-              >> $GITHUB_STEP_SUMMARY
-            echo "skip=true" >> $GITHUB_OUTPUT
+              >> "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout tap
@@ -294,10 +207,17 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 
-      - name: Download artifacts
+      # Same cross-workflow grab as `create-release` — reuse the
+      # tarballs from the CI run that brought us here rather than
+      # re-downloading from the release page (which would race the
+      # release API).
+      - name: Download CI artifacts
         if: steps.gate.outputs.skip != 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: watchwoman-*
           path: artifacts
 
       - name: Collect sha256s and regenerate formula
@@ -321,7 +241,7 @@ jobs:
             fi
             echo "$val"
           }
-          # Target tarball naming matches build-binaries.Package.NAME.
+          # Target tarball naming matches ci.yml build.Package.NAME.
           MACOS_ARM_SHA=$(must "watchwoman-${VERSION}-aarch64-apple-darwin.tar.gz")
           MACOS_AMD_SHA=$(must "watchwoman-${VERSION}-x86_64-apple-darwin.tar.gz")
           LINUX_ARM_SHA=$(must "watchwoman-${VERSION}-aarch64-unknown-linux-gnu.tar.gz")
