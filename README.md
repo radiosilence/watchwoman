@@ -19,6 +19,8 @@ brew install radiosilence/watchwoman/watchwoman
 | **Log noise**                      | `RecrawlWarning`, `No watching anymore`, `root dir disappeared` — shouted into every CI log at INFO. | WARN default. Nothing logged unless the kernel actually reported a problem. `RUST_LOG=debug` when needed.  |
 | **State corruption**               | Half-written state files wedge the daemon silently; fix is `rm -rf ~/.local/state/watchman`.         | Zero on-disk state (modulo opt-in trigger persistence). Socket is the only artefact, cleaned on start.     |
 | **Crashes**                        | Requires manual restart; subscribers drop silently.                                                   | Next CLI call auto-spawns a fresh daemon. Subscribers reconnect.                                           |
+| **Abandoned watches**              | Long-lived daemon (LaunchAgent, systemd) never drops a watch; deleted worktrees keep their file tree in RAM until restart. | Background GC every 60 s: reaps roots whose directory has disappeared (≥2 consecutive missed stats) and idle watches (no subs/triggers, untouched 14 d). Zero config. |
+| **Visibility**                     | `debug-status` returns a bare roots array; you stitch the rest from `ps`, `watch-list`, per-root `debug-root-status`. | `watchman status` — uptime, RSS, CPU, per-root file counts, idle time, health, and the last 64 reaps in one command. `--json` for scripts. |
 | **Dependencies**                   | C++ + Folly + fbthrift + fizz + wangle + glog + gflags + libsodium + … (≈110 MB of brew deps).       | One ~6 MB static binary. libc.                                                                              |
 
 ## Benchmarks
@@ -129,6 +131,7 @@ open slice.
 - [x] `state-enter`, `state-leave`.
 - [x] `trigger`, `trigger-list`, `trigger-del` — persisted to disk, survive restart.
 - [x] `log`, `log-level`, `shutdown-server`.
+- [x] `status` — watchwoman-native; human report or `--json`.
 - [x] `debug-ageout`, `debug-recrawl`, `debug-show-cursors`, `debug-poll-for-settle`.
 - [ ] `debug-drop-privs` — refuse; we never run as root by design.
 
@@ -172,6 +175,42 @@ are accepted but we settle in 5 ms anyway.
 - [x] `watchman-wait`, `watchman-make`.
 - [x] `watchman-diag`, `watchmanctl`.
 - [ ] `watchman-replicate-subscription` — deferred.
+
+## Inspection and GC
+
+`watchman status` prints what the daemon is actually doing — what
+upstream watchman makes you stitch together from `ps`, `watch-list`,
+and per-root `debug-root-status`:
+
+```
+watchwoman 2026.03.30.00  (pid 48769, up 4d03h)
+socket:  /Users/you/.local/state/watchman/you-state/sock
+memory:  954 MB   cpu: 12m34s user / 4m02s system
+roots:   12 watched · 2,804,061 files · 3 subs · 0 triggers
+
+ROOT                                                              FILES     IDLE  SUBS  TRIG  HEALTH
+…/workspace/project-a/.worktrees/feature-x                      551,889    2h15m    1     0  active
+…/workspace/project-a/.claude/worktrees/agent-a1159e30          223,537      6d        0     0  idle
+…/workspace/project-a/.worktrees/prefetch-search                     0       3h       0     0  dead
+```
+
+Pass `--json` for scripting.  The server always speaks JSON over the
+wire; the CLI just formats it.
+
+**Garbage collection is zero-conf.**  Every 60 s the daemon sweeps
+every watched root:
+
+- If `stat()` returns ENOENT on **two consecutive ticks** (60–120 s
+  grace), the watch is reaped as `dead`.  Usual cause: a removed git
+  worktree, an unmounted volume, or a deleted scratch tree.
+- If a root has **no subscriptions, no triggers, and no commands have
+  touched it for 14 days**, it's reaped as `stale`.  Anything actively
+  subscribed or triggered is never stale-reaped, regardless of idle
+  time.
+
+Reaps log at `WARN` and appear in `watchman status` for the next 64
+events so a long-running LaunchAgent can't silently drop a watch you
+cared about.
 
 ## Development
 

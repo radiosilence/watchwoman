@@ -8,6 +8,7 @@ use std::sync::Arc;
 use anyhow::Context;
 
 pub mod clock;
+pub mod gc;
 pub mod root;
 pub mod scm;
 pub mod server;
@@ -28,6 +29,7 @@ pub fn run_foreground(sock: &Path) -> anyhow::Result<ExitCode> {
         .context("building tokio runtime")?;
     rt.block_on(async move {
         let state = Arc::new(DaemonState::new(sock.to_path_buf()));
+        gc::spawn(state.clone());
         server::serve(state).await?;
         Ok::<_, anyhow::Error>(())
     })?;
