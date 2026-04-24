@@ -27,14 +27,20 @@ pub fn recrawl(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {
     ]))
 }
 
-pub fn ageout(_state: &Arc<DaemonState>, _args: &[Value]) -> CommandResult {
+pub fn ageout(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {
     // Watchman's ageout sweeper retires absent entries after N seconds.
-    // Watchwoman's tree doesn't grow unboundedly — the watcher marks
-    // entries `exists: false` but doesn't keep history, so there's
-    // nothing to age out.  Return the shape clients expect.
+    // Watchwoman prunes aggressively based on cursor watermarks, not
+    // wall time — so we ignore the age argument and just run a sweep
+    // across every root.  Returns total tombstones freed for parity.
+    let _ = args;
+    let mut freed: i64 = 0;
+    for entry in state.roots.iter() {
+        let (_watermark, removed) = entry.value().prune_tombstones();
+        freed += removed as i64;
+    }
     Ok(obj([
         ("ageout", Value::Bool(true)),
-        ("files", Value::Int(0)),
+        ("files", Value::Int(freed)),
     ]))
 }
 

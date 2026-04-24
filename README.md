@@ -21,7 +21,7 @@ brew install radiosilence/watchwoman/watchwoman
 | **Crashes**                        | Requires manual restart; subscribers drop silently.                                                   | Next CLI call auto-spawns a fresh daemon. Subscribers reconnect.                                           |
 | **Abandoned watches**              | Long-lived daemon (LaunchAgent, systemd) never drops a watch; deleted worktrees keep their file tree in RAM until restart. | Background GC every 60 s: reaps roots whose directory has disappeared (≥2 consecutive missed stats) and idle watches (no subs/triggers, untouched 14 d). Zero config. |
 | **Visibility**                     | `debug-status` returns a bare roots array; you stitch the rest from `ps`, `watch-list`, per-root `debug-root-status`. | `watchman status` — uptime, RSS, CPU, per-root file counts, idle time, health, and the last 64 reaps in one command. `--json` for scripts. |
-| **Dependencies**                   | C++ + Folly + fbthrift + fizz + wangle + glog + gflags + libsodium + … (≈110 MB of brew deps).       | One ~6 MB static binary. libc.                                                                              |
+| **Dependencies**                   | C++ + Folly + fbthrift + fizz + wangle + glog + gflags + libsodium + … (≈110 MB of brew deps).       | One ~3 MB stripped binary. libc.                                                                           |
 
 ## Benchmarks
 
@@ -185,17 +185,22 @@ and per-root `debug-root-status`:
 ```
 watchwoman 2026.03.30.00  (pid 48769, up 4d03h)
 socket:  /Users/you/.local/state/watchman/you-state/sock
-memory:  954 MB   cpu: 12m34s user / 4m02s system
-roots:   12 watched · 2,804,061 files · 3 subs · 0 triggers
+memory:  954 MB rss   cpu: 12m34s user / 4m02s system
+         421 MB tracked data (est) · 533 MB unaccounted (allocator / OS-held)
+roots:   12 watched · 2,804,061 files (2,798,512 live, 5,549 tombstones) · 3 subs · 0 triggers
 
-ROOT                                                              FILES     IDLE  SUBS  TRIG  HEALTH
-…/workspace/project-a/.worktrees/feature-x                      551,889    2h15m    1     0  active
-…/workspace/project-a/.claude/worktrees/agent-a1159e30          223,537      6d        0     0  idle
-…/workspace/project-a/.worktrees/prefetch-search                     0       3h       0     0  dead
+ROOT                                                    FILES   GHOSTS     MEM~  SUB  TRG  HEALTH
+…/workspace/project-a/.worktrees/feature-x            551,889    1,203   88 MB    1    0  active
+…/workspace/project-a/.claude/worktrees/agent-a115    223,537        4   34 MB    0    0  idle
+…/workspace/project-a/.worktrees/prefetch-search            0        0      0 B    0    0  dead
 ```
 
-Pass `--json` for scripting.  The server always speaks JSON over the
-wire; the CLI just formats it.
+The `tracked data (est)` number is watchwoman's own accounting of the
+per-entry struct + path bytes it's holding; `unaccounted` is the rest
+of RSS — allocator fragmentation, OS-held pages, BTreeMap node slop.
+A big gap there means you're looking at glibc / libmalloc, not at a
+leak.  Pass `--json` for scripting; the server always speaks JSON
+over the wire and the CLI just formats it.
 
 **Garbage collection is zero-conf.**  Every 60 s the daemon sweeps
 every watched root:
@@ -207,6 +212,12 @@ every watched root:
   touched it for 14 days**, it's reaped as `stale`.  Anything actively
   subscribed or triggered is never stale-reaped, regardless of idle
   time.
+- Tombstones (`exists: false` entries kept so `since` queries can
+  report deletions) are pruned down to the oldest named cursor's
+  watermark.  With no cursors, the prune is immediate — branch
+  churn on a monorepo doesn't accumulate ghost entries.  Subscribers
+  see deletions live via the tick broadcast and don't block the
+  prune.
 
 Reaps log at `WARN` and appear in `watchman status` for the next 64
 events so a long-running LaunchAgent can't silently drop a watch you

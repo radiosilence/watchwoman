@@ -18,6 +18,13 @@
 //! are never stale-reaped, regardless of idle time.  They can still
 //! be dead-reaped: if the directory is gone, nothing useful is
 //! happening anyway.
+//!
+//! Every sweep also prunes tombstones (deleted-file entries) from
+//! each surviving root.  Subscribers ship deletions live via tick
+//! events, so we only need to keep tombstones around for named
+//! cursors that haven't caught up yet — the watermark is the oldest
+//! live cursor.  Keeps the tree from growing unboundedly as files
+//! churn through branch switches and build output.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -96,6 +103,21 @@ pub fn sweep(state: &DaemonState) {
             && root.idle_seconds() >= STALE_IDLE_SECS
         {
             reap(state, &path, ReapReason::Stale);
+            continue;
+        }
+
+        // Tombstone pruning — the big memory saver for roots that see
+        // a lot of file churn (branch switches, build output).  The
+        // tree-side guard makes this a cheap no-op when there's
+        // nothing to prune.
+        let (watermark, removed) = root.prune_tombstones();
+        if removed > 0 {
+            tracing::debug!(
+                path = %path.display(),
+                watermark,
+                removed,
+                "pruned tombstones"
+            );
         }
     }
 }

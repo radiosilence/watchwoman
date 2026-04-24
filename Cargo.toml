@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 rust-version = "1.82"
 authors = ["James Cleveland <jc@blit.cc>"]
@@ -16,12 +16,19 @@ repository = "https://github.com/radiosilence/watchwoman"
 description = "A drop-in watchman replacement that doesn't eat your RAM."
 
 [workspace.dependencies]
-watchwoman-protocol = { path = "crates/watchwoman-protocol", version = "0.5.0" }
+watchwoman-protocol = { path = "crates/watchwoman-protocol", version = "0.5.1" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "net",
+    "io-util",
+    "time",
+] }
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 bytes = "1"
@@ -43,7 +50,7 @@ sha1 = "0.10"
 [profile.release]
 lto = "thin"
 codegen-units = 1
-strip = "debuginfo"
+strip = "symbols"
 panic = "abort"
 
 [profile.release-debug]

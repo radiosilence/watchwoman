@@ -230,14 +230,27 @@ pub fn status(state: &Arc<DaemonState>) -> CommandResult {
     let (rss_bytes, user_cpu_ms, system_cpu_ms) = self_resource_usage();
 
     let mut total_files: i64 = 0;
+    let mut total_live: i64 = 0;
+    let mut total_tombstones: i64 = 0;
     let mut total_subs: i64 = 0;
     let mut total_triggers: i64 = 0;
+    let mut total_tree_bytes: u64 = 0;
     let mut roots: Vec<Value> = Vec::new();
     for entry in state.roots.iter() {
         let path = entry.key();
         let root = entry.value();
-        let num_files = root.tree.read().len() as i64;
+        let (num_files, live, tombstones, tree_bytes) = {
+            let tree = root.tree.read();
+            let n = tree.len();
+            let live = tree.live_count();
+            let tomb = tree.tombstone_count();
+            let bytes = estimate_tree_bytes(n, tree.heap_string_bytes());
+            (n as i64, live as i64, tomb as i64, bytes)
+        };
         total_files += num_files;
+        total_live += live;
+        total_tombstones += tombstones;
+        total_tree_bytes = total_tree_bytes.saturating_add(tree_bytes);
         let subs = root.subscription_count() as i64;
         let triggers = root.trigger_count() as i64;
         total_subs += subs;
@@ -253,6 +266,9 @@ pub fn status(state: &Arc<DaemonState>) -> CommandResult {
             Value::String(path.to_string_lossy().into_owned()),
         );
         m.insert("num_files".into(), Value::Int(num_files));
+        m.insert("live_files".into(), Value::Int(live));
+        m.insert("tombstones".into(), Value::Int(tombstones));
+        m.insert("tree_bytes_est".into(), Value::Int(tree_bytes as i64));
         m.insert("clock".into(), Value::String(root.clock_string()));
         m.insert("subscriptions".into(), Value::Int(subs));
         m.insert("triggers".into(), Value::Int(triggers));
@@ -266,6 +282,18 @@ pub fn status(state: &Arc<DaemonState>) -> CommandResult {
         m.insert("health".into(), Value::String(health.into()));
         roots.push(Value::Object(m));
     }
+
+    let unaccounted = rss_bytes.saturating_sub(total_tree_bytes);
+    let mut memory = IndexMap::new();
+    memory.insert("rss_bytes".into(), Value::Int(rss_bytes as i64));
+    memory.insert("tree_bytes_est".into(), Value::Int(total_tree_bytes as i64));
+    memory.insert("unaccounted_bytes".into(), Value::Int(unaccounted as i64));
+    memory.insert("live_entries".into(), Value::Int(total_live));
+    memory.insert("tombstone_entries".into(), Value::Int(total_tombstones));
+    memory.insert(
+        "entry_size_bytes".into(),
+        Value::Int(crate::daemon::tree::ENTRY_SIZE as i64),
+    );
 
     let reaped: Vec<Value> = state
         .reap_log()
@@ -294,11 +322,28 @@ pub fn status(state: &Arc<DaemonState>) -> CommandResult {
         ("user_cpu_ms", Value::Int(user_cpu_ms as i64)),
         ("system_cpu_ms", Value::Int(system_cpu_ms as i64)),
         ("total_tracked_files", Value::Int(total_files)),
+        ("total_live_files", Value::Int(total_live)),
+        ("total_tombstones", Value::Int(total_tombstones)),
         ("total_subscriptions", Value::Int(total_subs)),
         ("total_triggers", Value::Int(total_triggers)),
+        ("memory", Value::Object(memory)),
         ("roots", Value::Array(roots)),
         ("reaped", Value::Array(reaped)),
     ]))
+}
+
+/// Estimate the heap bytes held by a [`Tree`](crate::daemon::tree::Tree):
+/// one `FileEntry` per entry plus the tracked string allocations plus
+/// a rough BTreeMap-node overhead tax.  Deliberately fudge-factored —
+/// this is diagnostic, not accounting.
+fn estimate_tree_bytes(entries: usize, string_bytes: usize) -> u64 {
+    // BTreeMap packs ~11 entries per B=6 node; each node is roughly
+    // 400 bytes on 64-bit.  That's ~36 bytes per entry amortised.
+    const BTREE_OVERHEAD_PER_ENTRY: usize = 40;
+    let per_entry = crate::daemon::tree::ENTRY_SIZE + BTREE_OVERHEAD_PER_ENTRY;
+    (entries
+        .saturating_mul(per_entry)
+        .saturating_add(string_bytes)) as u64
 }
 
 fn classify_health(
