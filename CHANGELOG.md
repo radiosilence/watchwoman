@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## Unreleased
+
+### Fixed
+
+- `list-capabilities` now advertises every command the dispatcher
+  actually handles — previously `get-log`, `global-log-level`, the
+  `debug-*` slew, and `field-content.sha1hex` were implemented but
+  not listed.  Clients doing `required` capability probes would
+  spuriously miss.
+- Also advertises the active watcher backend (`watcher-fsevents` on
+  macOS, `watcher-inotify` on Linux).
+
 ## [0.5.1] - 2026-04-24
 
 ### Added
