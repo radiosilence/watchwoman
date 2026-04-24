@@ -116,24 +116,32 @@ open slice.
 - [x] `argv[0]` dispatch (`watchman` alias).
 - [x] `-j` / `--json-command` — stdin PDU mode.
 - [x] `-p` / `--persistent` — stay connected for unilateral updates.
-- [x] `--no-pretty`, `--sockname` (env `$WATCHMAN_SOCK`).
+- [x] `--no-pretty`, `--sockname` (env `$WATCHMAN_SOCK`), `-u`/`-U`/`--unix-listener-path` aliases.
 - [x] Auto-spawn daemon on missing socket.
 - [x] `completion <shell>` generator.
-- [ ] `-o` / `--logfile`, `--pidfile` — daemon is logless + socket-liveness-only by design.
-- [ ] `--inetd` — unix-socket-only.
+- [x] `-o` / `--logfile` — redirects tracing to a file; `-` restores stderr.
+- [x] `--pidfile` — written on foreground-daemon start for process monitors that grep it.
+- [x] `--log-level 0|1|2|3` — numeric alias for off/warn/debug/trace.
+- [ ] `--inetd` — unix-socket-only by design.
 
 ### Commands
 
-- [x] `get-sockname`, `get-pid`, `version`, `list-capabilities`, `get-config`.
+- [x] `get-sockname`, `get-pid`, `version`, `list-capabilities`, `get-config`, `get-log`.
 - [x] `watch`, `watch-project`, `watch-list`, `watch-del`, `watch-del-all`.
 - [x] `clock` (SCM-aware), `query`, `find`, `since`.
 - [x] `subscribe`, `unsubscribe`, `flush-subscriptions`.
 - [x] `state-enter`, `state-leave`.
 - [x] `trigger`, `trigger-list`, `trigger-del` — persisted to disk, survive restart.
-- [x] `log`, `log-level`, `shutdown-server`.
+- [x] `log`, `log-level`, `global-log-level`, `shutdown-server`.
 - [x] `status` — watchwoman-native; human report or `--json`.
-- [x] `debug-ageout`, `debug-recrawl`, `debug-show-cursors`, `debug-poll-for-settle`.
-- [ ] `debug-drop-privs` — refuse; we never run as root by design.
+- [x] Debug real: `debug-ageout` (tombstone sweep), `debug-recrawl`, `debug-show-cursors`,
+      `debug-poll-for-settle`, `debug-status`, `debug-root-status`, `debug-watcher-info`,
+      `debug-get-asserted-states`, `debug-get-subscriptions`, `debug-contenthash`,
+      `debug-kqueue-and-fsevents-recrawl`, `debug-gc-tick`.
+- [x] Debug stubs (shape parity, no behaviour): `debug-set-parallel-crawl`,
+      `debug-set-subscriptions-paused`, `debug-symlink-target-cache`,
+      `debug-fsevents-inject-drop`, `debug-watcher-info-clear`.
+- [ ] `debug-drop-privs`, `debug-poison` — refuse; we never run as root and don't self-corrupt by design.
 
 ### Query language
 
@@ -175,6 +183,23 @@ are accepted but we settle in 5 ms anyway.
 - [x] `watchman-wait`, `watchman-make`.
 - [x] `watchman-diag`, `watchmanctl`.
 - [ ] `watchman-replicate-subscription` — deferred.
+
+### Known gaps
+
+Things upstream advertises / supports that we don't yet:
+
+- [ ] `field-atime` / `field-atime_ms` / `field-atime_ns` — access-time
+      fields.  No client we've seen asks for them, but it's a small
+      change (extend `FileEntry` + field enum).
+- [ ] Microsecond and fractional time fields: `field-mtime_us`,
+      `field-mtime_f`, `field-ctime_us`, `field-ctime_f`.  Trivial
+      derivations from the `_ns` values we already carry.
+- [ ] BSER capability bits (`DISABLE_UNICODE`, `DISABLE_UNICODE_FOR_ERRORS`)
+      — accepted on the wire, not yet acted on.
+- [ ] Capability advertisement sync — several commands we handle
+      (`cmd-get-log`, `cmd-global-log-level`, the debug-* slew,
+      `field-content.sha1hex`, watcher-backend caps) aren't yet in the
+      `list-capabilities` output even though the handlers exist.
 
 ## Inspection and GC
 
