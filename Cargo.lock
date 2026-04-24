@@ -1075,16 +1075,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "signal-hook-registry"
-version = "1.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
-dependencies = [
- "errno",
- "libc",
-]
-
-[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1204,9 +1194,7 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
- "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
@@ -1418,7 +1406,7 @@ dependencies = [
 
 [[package]]
 name = "watchwoman"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1448,7 +1436,7 @@ dependencies = [
 
 [[package]]
 name = "watchwoman-protocol"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "bytes",
  "indexmap",
@@ -1460,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "watchwoman-tests"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "indexmap",

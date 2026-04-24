@@ -177,6 +177,21 @@ impl Root {
         self.triggers.read().len()
     }
 
+    /// Prune tombstones that no outstanding cursor still needs.
+    /// Watermark is `min(current_tick, min(cursor_ticks))`; tombstones
+    /// whose `oclock` is at or below the watermark are dropped.
+    /// Subscribers don't count — they consume deletions live via
+    /// `TickEvent` broadcast, not by re-reading the tree.  Returns
+    /// `(watermark, removed)` so callers can log what happened.
+    pub fn prune_tombstones(&self) -> (u64, usize) {
+        let mut watermark = self.clock.current_tick();
+        for &t in self.cursors.read().values() {
+            watermark = watermark.min(t);
+        }
+        let removed = self.tree.write().prune_tombstones_before(watermark);
+        (watermark, removed)
+    }
+
     /// Return the tick a named cursor points at, or 0 if it's new.
     /// Watchman's `n:cursor` clocks are "file-scoped tick memories": a
     /// query with `since: "n:foo"` filters to files observed after the
@@ -304,7 +319,7 @@ impl Root {
                     changed_paths.push(rel);
                 }
                 PathChange::Remove { rel } => {
-                    tree.update(&rel, |e| e.mark_gone(tick));
+                    tree.mark_gone(&rel, tick);
                     changed_paths.push(rel);
                 }
             }

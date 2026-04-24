@@ -487,12 +487,22 @@ fn print_status_report(v: &Value) -> anyhow::Result<()> {
     let user_ms = get_i("user_cpu_ms");
     let sys_ms = get_i("system_cpu_ms");
     let total_files = get_i("total_tracked_files");
+    let total_tombstones = get_i("total_tombstones");
     let total_subs = get_i("total_subscriptions");
     let total_triggers = get_i("total_triggers");
 
     let empty: &[Value] = &[];
     let roots = obj.get("roots").and_then(Value::as_array).unwrap_or(empty);
     let reaped = obj.get("reaped").and_then(Value::as_array).unwrap_or(empty);
+    let mem = obj.get("memory").and_then(Value::as_object);
+    let tree_bytes = mem
+        .and_then(|m| m.get("tree_bytes_est"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let unaccounted = mem
+        .and_then(|m| m.get("unaccounted_bytes"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
 
     let mut out = io::stdout().lock();
     writeln!(
@@ -503,16 +513,26 @@ fn print_status_report(v: &Value) -> anyhow::Result<()> {
     writeln!(out, "socket:  {sock}")?;
     writeln!(
         out,
-        "memory:  {}   cpu: {} user / {} system",
+        "memory:  {} rss   cpu: {} user / {} system",
         format_bytes(rss as u64),
         format_duration_ms(user_ms as u64),
         format_duration_ms(sys_ms as u64)
     )?;
+    if tree_bytes > 0 || total_files > 0 {
+        writeln!(
+            out,
+            "         {} tracked data (est) · {} unaccounted (allocator / OS-held)",
+            format_bytes(tree_bytes as u64),
+            format_bytes(unaccounted.max(0) as u64),
+        )?;
+    }
     writeln!(
         out,
-        "roots:   {} watched · {} files · {} subs · {} triggers",
+        "roots:   {} watched · {} files ({} live, {} tombstones) · {} subs · {} triggers",
         roots.len(),
         format_count(total_files as u64),
+        format_count((total_files - total_tombstones).max(0) as u64),
+        format_count(total_tombstones.max(0) as u64),
         total_subs,
         total_triggers
     )?;
@@ -523,23 +543,28 @@ fn print_status_report(v: &Value) -> anyhow::Result<()> {
     } else {
         writeln!(
             out,
-            "{:<60} {:>10} {:>8} {:>5} {:>5}  HEALTH",
-            "ROOT", "FILES", "IDLE", "SUBS", "TRIG"
+            "{:<54} {:>10} {:>8} {:>8} {:>4} {:>4}  HEALTH",
+            "ROOT", "FILES", "GHOSTS", "MEM~", "SUB", "TRG"
         )?;
         for r in roots {
             let Some(ro) = r.as_object() else { continue };
             let path = ro.get("path").and_then(Value::as_str).unwrap_or("?");
             let num = ro.get("num_files").and_then(Value::as_i64).unwrap_or(0);
-            let idle = ro.get("idle_seconds").and_then(Value::as_i64).unwrap_or(0);
+            let tomb = ro.get("tombstones").and_then(Value::as_i64).unwrap_or(0);
+            let mem = ro
+                .get("tree_bytes_est")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
             let subs = ro.get("subscriptions").and_then(Value::as_i64).unwrap_or(0);
             let trig = ro.get("triggers").and_then(Value::as_i64).unwrap_or(0);
             let health = ro.get("health").and_then(Value::as_str).unwrap_or("?");
             writeln!(
                 out,
-                "{:<60} {:>10} {:>8} {:>5} {:>5}  {}",
-                truncate_left(path, 60),
+                "{:<54} {:>10} {:>8} {:>8} {:>4} {:>4}  {}",
+                truncate_left(path, 54),
                 format_count(num as u64),
-                format_duration(idle as u64),
+                format_count(tomb.max(0) as u64),
+                format_bytes(mem.max(0) as u64),
                 subs,
                 trig,
                 health

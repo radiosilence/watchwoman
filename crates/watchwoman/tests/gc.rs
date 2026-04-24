@@ -95,7 +95,9 @@ fn root_with_subscription_survives_gc() {
     );
 }
 
-/// The `status` command returns the shape the pretty-printer expects.
+/// The `status` command returns the shape the pretty-printer expects —
+/// including the memory-breakdown object and per-root live/tombstone
+/// counts added alongside aggressive tombstone pruning.
 #[test]
 fn status_reports_roots_and_counters() {
     let h = Harness::spawn().expect("spawn daemon");
@@ -116,21 +118,75 @@ fn status_reports_roots_and_counters() {
         "uptime_seconds",
         "rss_bytes",
         "total_tracked_files",
+        "total_live_files",
+        "total_tombstones",
+        "memory",
         "roots",
         "reaped",
     ] {
         assert!(obj.contains_key(key), "status missing key `{key}`: {obj:?}");
     }
 
+    let mem = obj.get("memory").and_then(Value::as_object).unwrap();
+    for key in [
+        "rss_bytes",
+        "tree_bytes_est",
+        "unaccounted_bytes",
+        "live_entries",
+        "tombstone_entries",
+        "entry_size_bytes",
+    ] {
+        assert!(
+            mem.contains_key(key),
+            "memory breakdown missing `{key}`: {mem:?}"
+        );
+    }
+
     let roots = obj.get("roots").and_then(Value::as_array).unwrap();
     assert_eq!(roots.len(), 1, "expected 1 root in status");
     let root = roots[0].as_object().unwrap();
-    for key in ["path", "num_files", "idle_seconds", "health"] {
+    for key in [
+        "path",
+        "num_files",
+        "live_files",
+        "tombstones",
+        "tree_bytes_est",
+        "idle_seconds",
+        "health",
+    ] {
         assert!(
             root.contains_key(key),
             "root entry missing `{key}`: {root:?}"
         );
     }
+
+    // Fresh scratch root has no tombstones; a freshly-watched empty
+    // dir should report zero.
+    assert_eq!(
+        root.get("tombstones").and_then(Value::as_i64),
+        Some(0),
+        "fresh watch shouldn't carry tombstones"
+    );
+}
+
+/// `debug-ageout` used to be a documented no-op; it now triggers the
+/// same tombstone sweep the GC runs. On an empty root it has nothing
+/// to free, but it should still succeed and return the expected shape.
+#[test]
+fn debug_ageout_runs_tombstone_sweep() {
+    let h = Harness::spawn().expect("spawn daemon");
+    let scratch = Scratch::new().unwrap();
+    let mut c = h.client().unwrap();
+    c.call(
+        "watch-project",
+        [Value::String(scratch.path().to_string_lossy().into())],
+    )
+    .unwrap();
+
+    let resp = c.call("debug-ageout", [Value::Int(0)]).unwrap();
+    let obj = resp.as_object().expect("ageout not an object");
+    assert_eq!(obj.get("ageout").and_then(Value::as_bool), Some(true));
+    assert_eq!(obj.get("files").and_then(Value::as_i64), Some(0));
 }
 
 fn listed_roots(c: &mut watchwoman_tests::Client) -> Vec<String> {
