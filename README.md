@@ -151,9 +151,9 @@ open slice.
 are accepted but we settle in 5 ms anyway.
 
 **Fields.** `name`, `exists`, `type`, `new`, `size`, `mode`, `uid`,
-`gid`, `ino`, `dev`, `nlink`, `mtime`, `mtime_ms`, `mtime_ns`,
-`ctime`, `ctime_ms`, `ctime_ns`, `cclock`, `oclock`, `symlink_target`,
-`content.sha1hex`.
+`gid`, `ino`, `dev`, `nlink`, `mtime`, `mtime_ms`, `mtime_us`,
+`mtime_ns`, `mtime_f`, `ctime`, `ctime_ms`, `ctime_us`, `ctime_ns`,
+`ctime_f`, `cclock`, `oclock`, `symlink_target`, `content.sha1hex`.
 
 ### Clocks
 
