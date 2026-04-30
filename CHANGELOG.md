@@ -14,6 +14,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   spuriously miss.
 - Also advertises the active watcher backend (`watcher-fsevents` on
   macOS, `watcher-inotify` on Linux).
+ 
+### Added
+
+- Field support for `mtime_us`, `mtime_f`, `ctime_us`, `ctime_f` —
+  microsecond and fractional-second variants of the time fields we
+  already carry at nanosecond precision.  Pure derivations; no
+  memory growth.
 
 ## [0.5.1] - 2026-04-24
 
