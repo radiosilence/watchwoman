@@ -11,14 +11,28 @@ const CAPABILITIES: &[&str] = &[
     "clock-sync-timeout",
     "cmd-clock",
     "cmd-debug-ageout",
+    "cmd-debug-contenthash",
+    "cmd-debug-fsevents-inject-drop",
+    "cmd-debug-get-asserted-states",
+    "cmd-debug-get-subscriptions",
+    "cmd-debug-kqueue-and-fsevents-recrawl",
     "cmd-debug-poll-for-settle",
     "cmd-debug-recrawl",
+    "cmd-debug-root-status",
+    "cmd-debug-set-parallel-crawl",
+    "cmd-debug-set-subscriptions-paused",
     "cmd-debug-show-cursors",
+    "cmd-debug-status",
+    "cmd-debug-symlink-target-cache",
+    "cmd-debug-watcher-info",
+    "cmd-debug-watcher-info-clear",
     "cmd-find",
     "cmd-flush-subscriptions",
     "cmd-get-config",
+    "cmd-get-log",
     "cmd-get-pid",
     "cmd-get-sockname",
+    "cmd-global-log-level",
     "cmd-list-capabilities",
     "cmd-log",
     "cmd-log-level",
@@ -41,6 +55,7 @@ const CAPABILITIES: &[&str] = &[
     "cmd-watch-project",
     "dedup_results",
     "field-cclock",
+    "field-content.sha1hex",
     "field-ctime",
     "field-ctime_f",
     "field-ctime_ms",
@@ -94,6 +109,21 @@ const CAPABILITIES: &[&str] = &[
     "wildmatch-multislash",
 ];
 
+/// The active watcher backend, advertised alongside [`CAPABILITIES`].
+/// Real watchman publishes one of `watcher-fsevents` / `watcher-kqueue`
+/// / `watcher-eden`; inotify isn't in their list but we'd rather tell
+/// the truth than lie about the backend we actually use.
+#[cfg(target_os = "macos")]
+const WATCHER_CAPABILITY: &str = "watcher-fsevents";
+#[cfg(target_os = "linux")]
+const WATCHER_CAPABILITY: &str = "watcher-inotify";
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+const WATCHER_CAPABILITY: &str = "watcher-kqueue";
+
+fn has_capability(name: &str) -> bool {
+    CAPABILITIES.contains(&name) || name == WATCHER_CAPABILITY
+}
+
 pub fn get_sockname(state: &Arc<DaemonState>) -> CommandResult {
     let s = state.sock_path.to_string_lossy().to_string();
     Ok(obj([
@@ -118,7 +148,7 @@ pub fn version(args: &[Value]) -> CommandResult {
             if let Some(required) = obj.get("required").and_then(Value::as_array) {
                 for c in required {
                     if let Some(name) = c.as_str() {
-                        let have = CAPABILITIES.contains(&name);
+                        let have = has_capability(name);
                         caps.insert(name.to_owned(), Value::Bool(have));
                         if !have && error.is_none() {
                             error = Some(format!("required capability `{name}` is not supported"));
@@ -129,7 +159,7 @@ pub fn version(args: &[Value]) -> CommandResult {
             if let Some(optional) = obj.get("optional").and_then(Value::as_array) {
                 for c in optional {
                     if let Some(name) = c.as_str() {
-                        caps.insert(name.to_owned(), Value::Bool(CAPABILITIES.contains(&name)));
+                        caps.insert(name.to_owned(), Value::Bool(has_capability(name)));
                     }
                 }
             }
@@ -155,10 +185,11 @@ pub fn version(args: &[Value]) -> CommandResult {
 }
 
 pub fn list_capabilities() -> CommandResult {
-    let v: Vec<Value> = CAPABILITIES
+    let mut v: Vec<Value> = CAPABILITIES
         .iter()
         .map(|c| Value::String((*c).to_owned()))
         .collect();
+    v.push(Value::String(WATCHER_CAPABILITY.to_owned()));
     Ok(obj([("capabilities", Value::Array(v))]))
 }
 

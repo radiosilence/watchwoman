@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+### Fixed
+
+- `list-capabilities` now advertises every command the dispatcher
+  actually handles — previously `get-log`, `global-log-level`, the
+  `debug-*` slew, and `field-content.sha1hex` were implemented but
+  not listed.  Clients doing `required` capability probes would
+  spuriously miss.
+- Also advertises the active watcher backend (`watcher-fsevents` on
+  macOS, `watcher-inotify` on Linux).
+ 
 ### Added
 
 - Field support for `mtime_us`, `mtime_f`, `ctime_us`, `ctime_f` —
