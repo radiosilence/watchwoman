@@ -1,12 +1,14 @@
 //! watchwoman — a drop-in watchman replacement.
 
-// jemalloc on every platform that jemalloc supports.  See the
-// `target.'cfg(...)'.dependencies` block in Cargo.toml for rationale;
-// short version: macOS' system allocator and glibc both hold freed
-// pages indefinitely, so RSS doesn't drop after a `watch-del` even
-// though the file-tree memory is logically gone.  jemalloc, plus the
-// purge we call from `daemon::alloc::purge`, fixes that.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+// jemalloc on macOS and Linux/glibc.  See the `target.'cfg(...)'`
+// block in Cargo.toml for the full rationale; short version: macOS'
+// system allocator and glibc both hold freed pages indefinitely, so
+// RSS doesn't drop after a `watch-del` even though the file-tree
+// memory is logically gone.  jemalloc + `daemon::alloc::purge` fixes
+// that.  Excluded: Windows (jemalloc upstream doesn't ship there)
+// and musl (tikv-jemalloc-sys' bundled jemalloc fails to compile
+// with `musl-gcc` because of a stdatomic include path difference).
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 

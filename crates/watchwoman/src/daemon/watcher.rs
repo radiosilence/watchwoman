@@ -22,6 +22,14 @@ pub fn spawn(root: Arc<Root>, mut cmd_rx: mpsc::UnboundedReceiver<WatcherCommand
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<notify::Result<Event>>();
 
     let root_path = root.path.clone();
+    // Synchronous rendezvous so `register_root` can't return — and
+    // `watch-project` can't ack the client — until the kernel-side
+    // inotify / fsevents registration is actually live.  Without this
+    // a fast `write()` immediately after `watch-project` would land
+    // before the watch was attached and the event would be silently
+    // dropped.  Saw it as a 10–15 % flake on the trigger integration
+    // test before this barrier went in.
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<()>(0);
     let watcher_handle = tokio::task::spawn_blocking(move || {
         let mut watcher: RecommendedWatcher = match notify::recommended_watcher(move |res| {
             let _ = event_tx.send(res);
@@ -29,16 +37,29 @@ pub fn spawn(root: Arc<Root>, mut cmd_rx: mpsc::UnboundedReceiver<WatcherCommand
             Ok(w) => w,
             Err(e) => {
                 tracing::warn!(?e, "failed to create watcher");
+                drop(ready_tx);
                 return;
             }
         };
         if let Err(e) = watcher.watch(&root_path, RecursiveMode::Recursive) {
             tracing::warn!(?e, "failed to watch root");
         }
+        // Signal ready *after* `watch()` returns: at this point
+        // inotify/fsevents has the kernel registration in place, so
+        // anything that touches the tree from now on will produce an
+        // event.  Closing the sender on early-failure paths above
+        // unblocks the caller too — they'll proceed without a working
+        // watcher, the warn above being the only signal, which
+        // matches the previous behaviour.
+        let _ = ready_tx.send(());
         // Park the watcher thread — dropping this task's handle drops
         // the watcher, and we rely on cmd_rx shutdown to park.
         std::thread::park();
     });
+    // Block until the watcher is registered.  The blocking task above
+    // runs on tokio's blocking-thread pool, so this doesn't deadlock
+    // the runtime even when called from an async handler.
+    let _ = ready_rx.recv();
 
     let root_for_events = root.clone();
     tokio::spawn(async move {

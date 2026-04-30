@@ -50,7 +50,13 @@ fn trigger_fires_on_change() {
 
     scratch.write("main.rs", b"fn main() {}").unwrap();
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // CI runners (especially the linux-arm and macos-amd64 cross
+    // slices) routinely take 5–10 s to wake the trigger task — fork
+    // + `/bin/sh -c touch` + watcher debounce all stack up and the
+    // 50 ms poll loop misses narrowly.  A genuine regression keeps
+    // the marker absent forever, so a generous deadline doesn't hide
+    // bugs, only cuts the false-positive rate.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut fired = false;
     while Instant::now() < deadline {
         if marker.exists() {
