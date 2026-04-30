@@ -3,6 +3,29 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Changed
+
+- Per-root file index now lives in a [bumpalo](https://docs.rs/bumpalo)
+  arena: path keys, symlink targets, the HashMap's backing array, and
+  every `FileEntry` payload all allocate from one contiguous range
+  per root.  Drop the root → drop the arena → bumpalo `munmap`s the
+  range as a single block, returning memory to the OS without depending
+  on the global allocator's cooperation.  This is the architectural
+  follow-up to 0.5.2's jemalloc purge: the purge cleaned freed pages,
+  but couldn't help when allocations from one root were interleaved
+  on the same page with allocations from a still-live root —
+  fragmentation defeated the reclaim.  An arena ensures the per-root
+  pages are unshared and therefore actually returnable.  Tracks #13.
+- `BTreeMap` in the tree replaced with `hashbrown::HashMap` so we can
+  store every entry inside the arena via the `allocator-api2`
+  allocator interface.  Iteration order is no longer guaranteed —
+  callers that need a stable order must sort the result themselves.
+- `status` now reports the exact arena-allocated bytes per root
+  (`tree_bytes_est`); the previous estimator (entry-count × const +
+  string-length tally + BTreeMap fudge factor) is gone.
+
 ## [0.5.2] - 2026-04-30
 
 ### Fixed

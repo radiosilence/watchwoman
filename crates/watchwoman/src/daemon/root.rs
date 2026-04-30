@@ -10,7 +10,7 @@ use parking_lot::RwLock;
 use tokio::sync::{broadcast, mpsc};
 
 use super::clock::Clock;
-use super::tree::{FileEntry, Tree};
+use super::tree::Tree;
 
 /// Information published on every tick — used by subscriptions.
 #[derive(Debug, Clone)]
@@ -308,14 +308,23 @@ impl Root {
                     metadata,
                     symlink_target,
                 } => {
-                    let fresh = !tree.contains(&rel);
-                    let mut entry = FileEntry::from_metadata(&metadata, symlink_target, tick);
-                    entry.is_new = fresh;
-                    // Preserve creation clock on updates.
-                    if let Some(existing) = tree.get(&rel) {
-                        entry.cclock = existing.cclock;
-                    }
-                    tree.insert(rel.clone(), entry);
+                    // Capture (fresh, cclock) before mutating: the
+                    // tree.upsert call below borrows `tree` mutably,
+                    // so we can't hold a `tree.get(&rel)` reference
+                    // across it.  Both values are Copy so the borrow
+                    // ends with the match.
+                    let (fresh, cclock) = match tree.get(&rel) {
+                        None => (true, tick),
+                        Some(e) => (false, e.cclock),
+                    };
+                    tree.upsert(
+                        &rel,
+                        &metadata,
+                        symlink_target.as_deref(),
+                        tick,
+                        fresh,
+                        cclock,
+                    );
                     changed_paths.push(rel);
                 }
                 PathChange::Remove { rel } => {
@@ -332,17 +341,29 @@ impl Root {
         tick
     }
 
-    /// Seed the tree from an initial full scan. Same bookkeeping as
-    /// [`Self::apply_changes`] but marks entries as non-new so the first
-    /// subscription payload doesn't spam the client with "fresh" files.
+    /// Seed the tree from an initial full scan.  Same bookkeeping as
+    /// [`Self::apply_changes`] but marks entries as non-new so the
+    /// first subscription payload doesn't spam the client with
+    /// "fresh" files.
+    ///
+    /// The fresh tree is replaced atomically: we build it pre-sized
+    /// to `entries.len()` so the arena allocates one large chunk
+    /// instead of growing geometrically through 22 reallocations on
+    /// a 5 M-file scan.
     pub fn seed(&self, entries: Vec<(PathBuf, std::fs::Metadata, Option<String>)>) -> u64 {
         let tick = self.clock.bump();
-        let mut tree = self.tree.write();
+        let mut fresh = Tree::with_capacity(entries.len());
         for (rel, metadata, symlink_target) in entries {
-            let mut entry = FileEntry::from_metadata(&metadata, symlink_target, tick);
-            entry.is_new = false;
-            tree.insert(rel, entry);
+            fresh.upsert(
+                &rel,
+                &metadata,
+                symlink_target.as_deref(),
+                tick,
+                false,
+                tick,
+            );
         }
+        *self.tree.write() = fresh;
         tick
     }
 

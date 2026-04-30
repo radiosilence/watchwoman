@@ -60,6 +60,9 @@ tracing-subscriber.workspace = true
 directories.workspace = true
 nix.workspace = true
 sha1.workspace = true
+bumpalo.workspace = true
+hashbrown.workspace = true
+allocator-api2.workspace = true
 indexmap = { version = "2", features = ["serde"] }
 
 # jemalloc gives us two things the system allocator on macOS won't:
