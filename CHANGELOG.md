@@ -23,6 +23,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   spuriously miss.
 - Also advertises the active watcher backend (`watcher-fsevents` on
   macOS, `watcher-inotify` on Linux).
+- `watch-project` now blocks until the kernel-side
+  inotify/fsevents registration is actually live before acking the
+  client.  Previously it returned as soon as the watcher task was
+  spawned, which left a small window where a fast `write()` from
+  the same caller could land before the watch was attached and
+  generate no event — surfaced as a 10–15 % flake on the trigger
+  integration test under load.
+
+### Build
+
+- jemalloc is now gated to macOS and Linux/glibc only, dropping
+  Linux/musl from the dependency.  `tikv-jemalloc-sys`' bundled
+  jemalloc fails to compile under `musl-gcc` on aarch64 (C11
+  stdatomic identifiers go missing through the wrapper), and
+  amd64-musl was building only by GCC-default luck.  musl's own
+  malloc returns pages aggressively enough that the loss is
+  acceptable; the daemon falls back to the system allocator with
+  `daemon::alloc::purge` no-op'd cleanly.
 
 ### Added
 

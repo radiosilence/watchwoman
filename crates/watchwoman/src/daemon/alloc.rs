@@ -16,7 +16,7 @@
 /// effort: errors are swallowed because purging is an optimisation,
 /// not a correctness requirement, and we don't want a daemon to
 /// crash on a transient mallctl failure.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub fn purge() {
     // SAFETY: every call below is a self-contained mallctl invocation
     // with byte-string keys.  The lengths and pointers are valid for
@@ -52,5 +52,5 @@ pub fn purge() {
 }
 
 /// No-op fallback for platforms where jemalloc isn't linked in.
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
 pub fn purge() {}

@@ -66,10 +66,20 @@ indexmap = { version = "2", features = ["serde"] }
 # (1) more aggressive page-return behaviour by default, and (2) an
 # explicit `arena.<all>.purge` mallctl we call after a watch is torn
 # down so that freed file-tree allocations actually shrink RSS instead
-# of sitting on the allocator's free list forever.  Linux gets the
-# same benefit; Windows isn't supported by jemalloc so we keep the
-# system allocator there.
-[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+# of sitting on the allocator's free list forever.  Linux glibc gets
+# the same benefit.
+#
+# Excluded:
+#   - Windows: jemalloc upstream doesn't support it.
+#   - musl on any arch: tikv-jemalloc-sys' bundled C source needs C11
+#     stdatomic, and `musl-gcc` (the wrapper apt's `musl-tools` ships)
+#     loses the `-std=` flag on the way through, so the build fails on
+#     `atomic_memory_order_relaxed` undeclared on linux-arm64-musl.
+#     amd64-musl currently builds by luck of GCC defaults — we drop it
+#     too rather than wait for the next toolchain bump to break it.
+#     musl's own malloc returns pages to the kernel more aggressively
+#     than glibc's anyway, so the loss is small.
+[target.'cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))'.dependencies]
 tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms"] }
 tikv-jemalloc-sys = "0.6"
 
