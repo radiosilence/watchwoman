@@ -4,6 +4,7 @@ use std::sync::Arc;
 use watchwoman_protocol::Value;
 
 use super::{obj, CommandError, CommandResult};
+use crate::daemon::alloc;
 use crate::daemon::state::DaemonState;
 
 pub fn watch(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {
@@ -57,6 +58,11 @@ pub fn watch_del(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {
     let path = arg_path(args)?;
     let canonical = std::fs::canonicalize(&path).unwrap_or(path);
     let removed = state.unregister_root(&canonical);
+    if removed {
+        // Hand the freed file-tree pages back to the OS so RSS
+        // reflects reality — see daemon::alloc for the long version.
+        alloc::purge();
+    }
     Ok(obj([
         ("watch-del", Value::Bool(removed)),
         ("root", Value::String(canonical.to_string_lossy().into())),
@@ -64,8 +70,11 @@ pub fn watch_del(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {
 }
 
 pub fn watch_del_all(state: &Arc<DaemonState>) -> CommandResult {
-    let removed: Vec<Value> = state
-        .drain_roots()
+    let drained = state.drain_roots();
+    if !drained.is_empty() {
+        alloc::purge();
+    }
+    let removed: Vec<Value> = drained
         .into_iter()
         .map(|p| Value::String(p.to_string_lossy().into()))
         .collect();

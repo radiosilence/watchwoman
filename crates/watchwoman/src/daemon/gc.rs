@@ -31,6 +31,7 @@ use std::time::Duration;
 
 use tokio::time;
 
+use super::alloc;
 use super::state::{DaemonState, ReapEvent, ReapReason};
 
 /// How often the GC loop wakes up.
@@ -41,10 +42,29 @@ const TICK: Duration = Duration::from_secs(60);
 /// rename-in-place or brief unmount without prematurely reaping.
 const DEAD_TICK_THRESHOLD: u32 = 2;
 
-/// Idle seconds that a root with no subscriptions and no triggers is
-/// tolerated before it's reaped as stale.  14 days picks up abandoned
-/// worktrees while leaving a workflow you touched last week alone.
-const STALE_IDLE_SECS: u64 = 14 * 24 * 60 * 60;
+/// Default idle seconds that a root with no subscriptions and no
+/// triggers is tolerated before it's reaped as stale.  Watches are
+/// ephemeral — when a tool like `watchman-wait`, `jest --watch` or a
+/// metro server exits, the root sits unused with no client to clean
+/// up after it.  An hour is long enough to ride out a coffee break or
+/// a flaky CI rerun, short enough that abandoned worktrees don't
+/// accumulate file index data for days on end.
+///
+/// Override at daemon start with `WATCHWOMAN_STALE_IDLE_SECS=<n>` —
+/// `0` disables stale reaping entirely (dead reaping still runs).
+const STALE_IDLE_SECS_DEFAULT: u64 = 60 * 60;
+
+/// Resolve the active stale-reap threshold from the environment, with
+/// the default as a fallback.  Read once per sweep so the user can
+/// twiddle it without bouncing the daemon (cheap; envs are a syscall).
+/// Pub for `info::status` so the health classifier mirrors what the
+/// GC will actually reap.
+pub fn stale_idle_secs() -> u64 {
+    std::env::var("WATCHWOMAN_STALE_IDLE_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(STALE_IDLE_SECS_DEFAULT)
+}
 
 /// Spawn the GC task.  It lives for the lifetime of the daemon and
 /// exits on shutdown.
@@ -71,6 +91,7 @@ pub fn spawn(state: Arc<DaemonState>) {
 /// `debug-gc-tick` command so integration tests can exercise the
 /// policy without waiting a real minute.
 pub fn sweep(state: &DaemonState) {
+    let stale_secs = stale_idle_secs();
     let paths: Vec<_> = state.roots.iter().map(|e| e.key().clone()).collect();
     for path in paths {
         let Some(root) = state.roots.get(&path).map(|r| r.clone()) else {
@@ -97,10 +118,12 @@ pub fn sweep(state: &DaemonState) {
 
         // Stale check — only applies to roots with no active clients.
         // A subscribed or triggered root is in use by definition, no
-        // matter how long since the last explicit command.
-        if root.subscription_count() == 0
+        // matter how long since the last explicit command.  A 0
+        // threshold disables this branch entirely.
+        if stale_secs > 0
+            && root.subscription_count() == 0
             && root.trigger_count() == 0
-            && root.idle_seconds() >= STALE_IDLE_SECS
+            && root.idle_seconds() >= stale_secs
         {
             reap(state, &path, ReapReason::Stale);
             continue;
@@ -139,4 +162,9 @@ fn reap(state: &DaemonState, path: &std::path::Path, reason: ReapReason) {
             .map(|d| d.as_secs())
             .unwrap_or(0),
     });
+    // Reaping a root with millions of file entries can free hundreds
+    // of MB at once.  Without this nudge the allocator just parks the
+    // pages on its dirty list, so RSS lies — exactly the regression
+    // that prompted this whole change.
+    alloc::purge();
 }

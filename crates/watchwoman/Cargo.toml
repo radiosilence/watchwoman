@@ -62,6 +62,17 @@ nix.workspace = true
 sha1.workspace = true
 indexmap = { version = "2", features = ["serde"] }
 
+# jemalloc gives us two things the system allocator on macOS won't:
+# (1) more aggressive page-return behaviour by default, and (2) an
+# explicit `arena.<all>.purge` mallctl we call after a watch is torn
+# down so that freed file-tree allocations actually shrink RSS instead
+# of sitting on the allocator's free list forever.  Linux gets the
+# same benefit; Windows isn't supported by jemalloc so we keep the
+# system allocator there.
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms"] }
+tikv-jemalloc-sys = "0.6"
+
 [dev-dependencies]
 watchwoman-tests = { path = "../watchwoman-tests" }
 indexmap = { version = "2", features = ["serde"] }

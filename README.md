@@ -209,9 +209,13 @@ every watched root:
   grace), the watch is reaped as `dead`.  Usual cause: a removed git
   worktree, an unmounted volume, or a deleted scratch tree.
 - If a root has **no subscriptions, no triggers, and no commands have
-  touched it for 14 days**, it's reaped as `stale`.  Anything actively
-  subscribed or triggered is never stale-reaped, regardless of idle
-  time.
+  touched it for an hour**, it's reaped as `stale`.  Watches are
+  ephemeral; when `jest --watch`, `watchman-wait`, or a metro server
+  exits without `watch-del` the root just sits around forever
+  otherwise.  Override the threshold with `WATCHWOMAN_STALE_IDLE_SECS`
+  (`0` disables stale reaping; dead reaping still runs).  Anything
+  actively subscribed or triggered is never stale-reaped, regardless
+  of idle time.
 - Tombstones (`exists: false` entries kept so `since` queries can
   report deletions) are pruned down to the oldest named cursor's
   watermark.  With no cursors, the prune is immediate — branch

@@ -59,6 +59,54 @@ fn dead_root_is_reaped() {
     );
 }
 
+/// A root with no subscriptions and no triggers should be stale-
+/// reaped once `idle_seconds` crosses `WATCHWOMAN_STALE_IDLE_SECS`.
+/// We dial the threshold to 1 s and wait long enough that the next
+/// debug-gc-tick fires the reap path.
+#[test]
+fn idle_root_is_stale_reaped() {
+    let h = Harness::spawn_with_env(&[("WATCHWOMAN_STALE_IDLE_SECS", "1")]).expect("spawn daemon");
+    let scratch = Scratch::new().unwrap();
+    let mut c = h.client().unwrap();
+    let root_str = scratch.path().to_string_lossy().into_owned();
+
+    c.call("watch-project", [Value::String(root_str.clone())])
+        .unwrap();
+    assert!(
+        listed_roots(&mut c).iter().any(|p| p == &root_str),
+        "root missing after watch-project"
+    );
+
+    // The threshold is `idle_seconds >= STALE_SECS`, and `idle_seconds`
+    // ticks in whole seconds — so we sleep just over a second to make
+    // sure the comparison fires deterministically.
+    std::thread::sleep(std::time::Duration::from_millis(1_200));
+    c.call("debug-gc-tick", []).unwrap();
+
+    let after = listed_roots(&mut c);
+    assert!(
+        !after.iter().any(|p| p == &root_str),
+        "idle root not reaped after threshold expired: {after:?}"
+    );
+
+    let status = c.call("status", []).unwrap();
+    let reaped = status
+        .as_object()
+        .and_then(|o| o.get("reaped"))
+        .and_then(Value::as_array)
+        .expect("status response missing `reaped` array");
+    assert!(
+        reaped.iter().any(|entry| {
+            let Some(o) = entry.as_object() else {
+                return false;
+            };
+            o.get("path").and_then(Value::as_str) == Some(root_str.as_str())
+                && o.get("reason").and_then(Value::as_str) == Some("stale")
+        }),
+        "reap log missing the stale root: {reaped:?}"
+    );
+}
+
 /// An active root — one with a live subscription — must never be
 /// reaped, even if its idle counter is old.  This is the one place
 /// the zero-conf policy has to defend against: something flashy

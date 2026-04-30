@@ -90,7 +90,20 @@ impl Harness {
         Self::spawn_with(TargetBinary::from_env())
     }
 
+    /// Spawn with extra env vars set on the daemon process — used by
+    /// tests that need to flip a runtime knob like
+    /// `WATCHWOMAN_STALE_IDLE_SECS` without polluting the test
+    /// process's own environment (cargo runs tests in shared
+    /// process-wide env, so global mutation is racy).
+    pub fn spawn_with_env(envs: &[(&str, &str)]) -> anyhow::Result<Self> {
+        Self::spawn_inner(TargetBinary::from_env(), envs)
+    }
+
     pub fn spawn_with(target: TargetBinary) -> anyhow::Result<Self> {
+        Self::spawn_inner(target, &[])
+    }
+
+    fn spawn_inner(target: TargetBinary, envs: &[(&str, &str)]) -> anyhow::Result<Self> {
         let state_dir = tempfile::Builder::new()
             .prefix("watchwoman-harness-")
             .tempdir()
@@ -118,11 +131,14 @@ impl Harness {
             }
         }
 
-        let child = cmd
-            .stdin(Stdio::null())
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("WATCHMAN_CONFIG_FILE", "/dev/null")
+            .env("WATCHMAN_CONFIG_FILE", "/dev/null");
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let child = cmd
             .spawn()
             .with_context(|| format!("spawning {}", binary.display()))?;
 
