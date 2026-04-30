@@ -398,36 +398,133 @@ fn classify_health(
     if subs > 0 || triggers > 0 {
         return "active";
     }
-    // Mirror the GC's stale threshold — 14 days — but the report is
-    // informational: the daemon still reaps based on its own timer.
-    const STALE_DAYS: i64 = 14;
-    if idle_seconds >= STALE_DAYS * 24 * 3600 {
+    // Mirror the GC's stale threshold so the report reflects what the
+    // daemon will actually reap.  A 0 threshold means stale reaping is
+    // disabled — never mark a root "stale" in that mode.
+    let threshold = crate::daemon::gc::stale_idle_secs() as i64;
+    if threshold > 0 && idle_seconds >= threshold {
         "stale"
     } else {
         "idle"
     }
 }
 
-/// Read the daemon's own resource usage from `getrusage(RUSAGE_SELF)`.
-/// Returns `(rss_bytes, user_cpu_ms, system_cpu_ms)`.  macOS reports
-/// `ru_maxrss` in bytes; Linux in kilobytes — normalise both to bytes.
+/// Read the daemon's own resource usage.  Returns `(rss_bytes,
+/// user_cpu_ms, system_cpu_ms)`.
+///
+/// CPU times come from `getrusage(RUSAGE_SELF)` — those are cumulative
+/// counters where the kernel-reported value is exactly what we want.
+///
+/// RSS comes from a platform-specific path: `getrusage`'s `ru_maxrss`
+/// is the **peak** RSS the process has ever reached, monotonic for the
+/// lifetime of the process.  Surfacing peak as "current memory" makes
+/// the status report lie after a `watch-del-all` — operators see a
+/// huge number that never drops and assume the daemon has leaked.  We
+/// read the live resident set instead.
 fn self_resource_usage() -> (u64, u64, u64) {
     use nix::sys::resource::{getrusage, UsageWho};
-    let Ok(usage) = getrusage(UsageWho::RUSAGE_SELF) else {
-        return (0, 0, 0);
-    };
-    let raw_rss = usage.max_rss();
-    let rss_bytes = if cfg!(target_os = "macos") {
-        raw_rss.max(0) as u64
-    } else {
-        (raw_rss.max(0) as u64).saturating_mul(1024)
-    };
-    let user = usage.user_time();
-    let system = usage.system_time();
+    let cpu = getrusage(UsageWho::RUSAGE_SELF).ok();
     let to_ms = |t: nix::sys::time::TimeVal| -> u64 {
         let secs = t.tv_sec().max(0) as u64;
         let us = t.tv_usec().max(0) as u64;
         secs.saturating_mul(1000) + us / 1000
     };
-    (rss_bytes, to_ms(user), to_ms(system))
+    let (user_ms, system_ms) = match cpu {
+        Some(u) => (to_ms(u.user_time()), to_ms(u.system_time())),
+        None => (0, 0),
+    };
+    let rss_bytes = current_rss_bytes().unwrap_or(0);
+    (rss_bytes, user_ms, system_ms)
+}
+
+/// Current resident-set size in bytes, or `None` if the platform-
+/// specific read failed.  Unlike `getrusage::ru_maxrss` this drops
+/// when memory is released — exactly what `status` needs to surface.
+#[cfg(target_os = "macos")]
+fn current_rss_bytes() -> Option<u64> {
+    // `task_info(MACH_TASK_BASIC_INFO)` is the canonical way to read
+    // live RSS on macOS.  The struct layout matches `<mach/task_info.h>`
+    // — three `mach_vm_size_t` followed by two `time_value_t` followed
+    // by `policy_t` and `integer_t`.  Total size is 48 bytes, count is
+    // 12 `natural_t` (u32) words.
+    use std::mem::MaybeUninit;
+
+    #[repr(C)]
+    struct MachTaskBasicInfo {
+        virtual_size: u64,
+        resident_size: u64,
+        resident_size_max: u64,
+        user_time_seconds: i32,
+        user_time_microseconds: i32,
+        system_time_seconds: i32,
+        system_time_microseconds: i32,
+        policy: i32,
+        suspend_count: i32,
+    }
+
+    const MACH_TASK_BASIC_INFO: u32 = 20;
+    const MACH_TASK_BASIC_INFO_COUNT: u32 =
+        (std::mem::size_of::<MachTaskBasicInfo>() / std::mem::size_of::<u32>()) as u32;
+
+    extern "C" {
+        fn mach_task_self() -> u32;
+        fn task_info(
+            target_task: u32,
+            flavor: u32,
+            task_info_out: *mut i32,
+            task_info_count: *mut u32,
+        ) -> i32;
+    }
+
+    let mut info = MaybeUninit::<MachTaskBasicInfo>::uninit();
+    let mut count = MACH_TASK_BASIC_INFO_COUNT;
+    // SAFETY: `mach_task_self()` returns this process's task port,
+    // which `task_info` always accepts.  The buffer is sized to match
+    // `MACH_TASK_BASIC_INFO_COUNT` words, the size the flavor writes.
+    let kr = unsafe {
+        task_info(
+            mach_task_self(),
+            MACH_TASK_BASIC_INFO,
+            info.as_mut_ptr() as *mut i32,
+            &mut count,
+        )
+    };
+    if kr != 0 {
+        return None;
+    }
+    // SAFETY: `task_info` returned KERN_SUCCESS, so the buffer is now
+    // fully initialised in the layout we declared.
+    let info = unsafe { info.assume_init() };
+    Some(info.resident_size)
+}
+
+#[cfg(target_os = "linux")]
+fn current_rss_bytes() -> Option<u64> {
+    // /proc/self/statm columns are page counts: size resident shared
+    // text lib data dt.  Resident is column 2.
+    let s = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = s.split_whitespace().nth(1)?.parse().ok()?;
+    let page_size = page_size_bytes()?;
+    Some(pages.saturating_mul(page_size))
+}
+
+#[cfg(target_os = "linux")]
+fn page_size_bytes() -> Option<u64> {
+    extern "C" {
+        fn getpagesize() -> i32;
+    }
+    // SAFETY: getpagesize() is a leaf syscall wrapper; no preconditions.
+    let n = unsafe { getpagesize() };
+    if n > 0 {
+        Some(n as u64)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn current_rss_bytes() -> Option<u64> {
+    // No portable live-RSS read on other unixes.  status will report
+    // 0 on those platforms rather than the misleading peak.
+    None
 }

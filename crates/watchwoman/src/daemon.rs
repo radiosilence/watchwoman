@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 
+pub mod alloc;
 pub mod clock;
 pub mod gc;
 pub mod root;
