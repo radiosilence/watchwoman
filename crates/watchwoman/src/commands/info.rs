@@ -350,6 +350,20 @@ pub fn status(state: &Arc<DaemonState>) -> CommandResult {
         .collect();
 
     Ok(obj([
+        // Real watchwoman semver, distinct from the watchman date-
+        // stamped `compat_version` we hand back from the `version`
+        // command for client-compat probes.  The CLI render slot
+        // (`watchwoman {version}  (pid …)`) was reading this field
+        // already; without it we printed a blank where the version
+        // should be.
+        (
+            "version",
+            Value::String(crate::WATCHWOMAN_VERSION.into()),
+        ),
+        (
+            "compat_version",
+            Value::String(crate::WATCHMAN_COMPAT_VERSION.into()),
+        ),
         ("pid", Value::Int(std::process::id() as i64)),
         (
             "sockname",
