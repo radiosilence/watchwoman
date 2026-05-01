@@ -356,10 +356,7 @@ pub fn status(state: &Arc<DaemonState>) -> CommandResult {
         // (`watchwoman {version}  (pid …)`) was reading this field
         // already; without it we printed a blank where the version
         // should be.
-        (
-            "version",
-            Value::String(crate::WATCHWOMAN_VERSION.into()),
-        ),
+        ("version", Value::String(crate::WATCHWOMAN_VERSION.into())),
         (
             "compat_version",
             Value::String(crate::WATCHMAN_COMPAT_VERSION.into()),
