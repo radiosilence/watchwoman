@@ -171,8 +171,8 @@ pub fn render_row(
             Field::New => Value::Bool(entry.is_new),
             Field::CClock => Value::String(clock.encode(entry.cclock)),
             Field::OClock => Value::String(clock.encode(entry.oclock)),
-            Field::SymlinkTarget => match &entry.symlink_target {
-                Some(t) => Value::String(t.clone()),
+            Field::SymlinkTarget => match entry.symlink_target {
+                Some(t) => Value::String(t.to_owned()),
                 None => Value::Null,
             },
             Field::ContentSha1Hex => sha1_of(&root_path.join(rel)),
@@ -211,7 +211,7 @@ mod tests {
     use super::*;
     use crate::daemon::tree::{FileEntry, FileKind};
 
-    fn synthetic_entry(mtime_ns: i128, ctime_ns: i128) -> FileEntry {
+    fn synthetic_entry(mtime_ns: i128, ctime_ns: i128) -> FileEntry<'static> {
         FileEntry {
             exists: true,
             kind: FileKind::File,

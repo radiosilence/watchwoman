@@ -279,7 +279,11 @@ pub fn status(state: &Arc<DaemonState>) -> CommandResult {
             let n = tree.len();
             let live = tree.live_count();
             let tomb = tree.tombstone_count();
-            let bytes = estimate_tree_bytes(n, tree.heap_string_bytes());
+            // arena_bytes is exact: every per-root allocation goes
+            // through the bumpalo arena (path keys, symlink targets,
+            // HashMap backing array, FileEntry payloads), so this is
+            // the per-root memory footprint not an estimate.
+            let bytes = tree.arena_bytes() as u64;
             (n as i64, live as i64, tomb as i64, bytes)
         };
         total_files += num_files;
@@ -365,20 +369,6 @@ pub fn status(state: &Arc<DaemonState>) -> CommandResult {
         ("roots", Value::Array(roots)),
         ("reaped", Value::Array(reaped)),
     ]))
-}
-
-/// Estimate the heap bytes held by a [`Tree`](crate::daemon::tree::Tree):
-/// one `FileEntry` per entry plus the tracked string allocations plus
-/// a rough BTreeMap-node overhead tax.  Deliberately fudge-factored —
-/// this is diagnostic, not accounting.
-fn estimate_tree_bytes(entries: usize, string_bytes: usize) -> u64 {
-    // BTreeMap packs ~11 entries per B=6 node; each node is roughly
-    // 400 bytes on 64-bit.  That's ~36 bytes per entry amortised.
-    const BTREE_OVERHEAD_PER_ENTRY: usize = 40;
-    let per_entry = crate::daemon::tree::ENTRY_SIZE + BTREE_OVERHEAD_PER_ENTRY;
-    (entries
-        .saturating_mul(per_entry)
-        .saturating_add(string_bytes)) as u64
 }
 
 fn classify_health(
