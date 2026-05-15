@@ -134,6 +134,13 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: ${{ matrix.target }}
+          # Restoring a stale ~/.cargo/bin/ over the freshly installed
+          # rustup proxy leaves `cargo` pointing at a half-bootstrapped
+          # rustup-init shim on the macOS arm64 runners — every
+          # `cargo build` then errors with "unexpected argument 'build'
+          # found / Usage: rustup-init[EXE]".  The registry/target/git
+          # caches still restore; only ~/.cargo/bin/ is skipped.
+          cache-bin: "false"
 
       - name: Read workspace version
         id: ver
