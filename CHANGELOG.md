@@ -3,6 +3,12 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Changed
+
+- Dependency updates via `cargo update` (Cargo.lock only).
+
 ## [0.6.0] - 2026-05-01
 
 The headline is structural memory reclaim: per-root file index moves
