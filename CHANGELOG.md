@@ -7,7 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
-- Dependency updates via `cargo update` (Cargo.lock only).
+- Bumped several dependencies past semver: `notify` 7 → 8, `nix`
+  0.29 → 0.31, `directories` 5 → 6, `hashbrown` 0.15 → 0.17,
+  `allocator-api2` 0.2 → 0.4, `sha1` 0.10 → 0.11.  Pulls in the
+  refreshed `digest`/`crypto-common` stack (now `hybrid-array`-based,
+  with `generic-array` dropped from the closure), `notify-types` 2.x,
+  and `dirs-sys` 0.5.  No source changes were required: the arena
+  file-index in `Tree` keeps working with `hashbrown` 0.17 unchanged
+  because we hand it a `&Bump` allocator via bumpalo's
+  `allocator-api2` shim (which still pins the v0.2 line), and the
+  `nix`/`directories`/`notify` surface we touch is API-stable across
+  these bumps.  `allocator-api2` and `directories` are still declared
+  workspace pins for forward-compat but neither is imported in
+  watchwoman sources today — they're inert leftovers from the 0.6.0
+  arena refactor, kept in lockstep so a future use site doesn't
+  silently regress them.
+- In-semver dependency refresh via `cargo update` (Cargo.lock-only)
+  folded into the same release.
 
 ## [0.6.0] - 2026-05-01
 
