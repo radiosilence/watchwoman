@@ -191,15 +191,10 @@ Things upstream advertises / supports that we don't yet:
 - [ ] `field-atime` / `field-atime_ms` / `field-atime_ns` — access-time
       fields.  No client we've seen asks for them, but it's a small
       change (extend `FileEntry` + field enum).
-- [ ] Microsecond and fractional time fields: `field-mtime_us`,
-      `field-mtime_f`, `field-ctime_us`, `field-ctime_f`.  Trivial
-      derivations from the `_ns` values we already carry.
+      [#26](https://github.com/radiosilence/watchwoman/issues/26)
 - [ ] BSER capability bits (`DISABLE_UNICODE`, `DISABLE_UNICODE_FOR_ERRORS`)
       — accepted on the wire, not yet acted on.
-- [ ] Capability advertisement sync — several commands we handle
-      (`cmd-get-log`, `cmd-global-log-level`, the debug-* slew,
-      `field-content.sha1hex`, watcher-backend caps) aren't yet in the
-      `list-capabilities` output even though the handlers exist.
+      [#27](https://github.com/radiosilence/watchwoman/issues/27)
 
 ## Inspection and GC
 
