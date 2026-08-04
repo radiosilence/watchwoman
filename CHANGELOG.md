@@ -67,11 +67,12 @@ of RSS, and allocator live-versus-mapped.
   `tikv-jemalloc-sys`' `stats` feature turned on.
 - `unaccounted_bytes` is now measured against footprint rather than
   RSS, so compressed pages count against it.
-- Declared MSRV corrected 1.82 → **1.85**
+- Declared MSRV corrected 1.82 → **1.88**
   ([#25](https://github.com/radiosilence/watchwoman/pull/25)).  1.82
   hadn't built since the `hashbrown` 0.17 bump — its cargo can't even
   parse hashbrown's manifest — so the number was a promise nothing
-  kept.  CI now checks it on every run, alongside refreshed action
+  kept.  The floor is `ignore` 0.4.32; the rest of the tree needs
+  1.85.  CI now checks it on every run, alongside refreshed action
   pins (`checkout` v7, `sccache-action` v0.0.11, `action-gh-release`
   v3).
 
