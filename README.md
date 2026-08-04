@@ -203,7 +203,7 @@ upstream watchman makes you stitch together from `ps`, `watch-list`,
 and per-root `debug-root-status`:
 
 ```
-watchwoman 2026.03.30.00  (pid 48769, up 4d03h)
+watchwoman 0.7.0  (pid 48769, up 4d03h)
 socket:  /Users/you/.local/state/watchman/you-state/sock
 memory:  954 MB footprint (912 MB resident)   cpu: 12m34s user / 4m02s system
          421 MB tracked data (est) · 533 MB unaccounted (allocator / OS-held)

@@ -5,10 +5,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-04
+
+0.6.0 claimed memory tracked the daemon's live working set.  It did
+not.  Every root ever watched leaked its whole file index, and the two
+things that should have caught it were themselves broken: `status`
+reported RSS, which goes down when the kernel compresses a leak away,
+and the allocator purge had never once executed.  A daemon up for
+thirteen days with zero roots watched held 4.4 GB.
+
+The fix is three unrelated bugs deep, so the release also adds the
+reporting that would have surfaced it on day one — footprint instead
+of RSS, and allocator live-versus-mapped.
+
 ### Fixed
 
 - **Every watched root leaked its entire file index for the life of
-  the daemon.**  The watcher, trigger and subscription tasks each held
+  the daemon** ([#23](https://github.com/radiosilence/watchwoman/pull/23)).
+  The watcher, trigger and subscription tasks each held
   a strong `Arc<Root>` while awaiting a channel whose sender lived
   inside that same `Root`.  `Root::drop` is what sends the shutdown
   signal, so the tasks waited for a message that could not be sent
@@ -25,8 +39,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - `arena.<all>.purge` never ran.  jemalloc spells "every arena" as
   `4096`; the sentinel was `u32::MAX - 1`, so `mallctl` returned
   `ENOENT` and the purge silently did nothing on every platform since
-  the day it was added.  A unit test now asserts the key resolves,
-  because a wrong value fails silently rather than loudly.
+  the day it was added in 0.5.2.  A unit test now asserts the key
+  resolves, because a wrong value fails silently rather than loudly.
+- The known-gaps list claimed the microsecond/fractional time fields
+  and the capability-advertisement sync were still outstanding; both
+  shipped in 0.5.2
+  ([#28](https://github.com/radiosilence/watchwoman/pull/28)).  The
+  two real gaps are now tracked as
+  [#26](https://github.com/radiosilence/watchwoman/issues/26) and
+  [#27](https://github.com/radiosilence/watchwoman/issues/27).
 
 ### Changed
 
@@ -46,10 +67,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `tikv-jemalloc-sys`' `stats` feature turned on.
 - `unaccounted_bytes` is now measured against footprint rather than
   RSS, so compressed pages count against it.
+- Declared MSRV corrected 1.82 → **1.88**
+  ([#25](https://github.com/radiosilence/watchwoman/pull/25)).  1.82
+  hadn't built since the `hashbrown` 0.17 bump — its cargo can't even
+  parse hashbrown's manifest — so the number was a promise nothing
+  kept.  The floor is `ignore` 0.4.32; the rest of the tree needs
+  1.85.  CI now checks it on every run, alongside refreshed action
+  pins (`checkout` v7, `sccache-action` v0.0.11, `action-gh-release`
+  v3).
 
-### Changed
+### Dependencies
 
-- Bumped several dependencies past semver: `notify` 7 → 8, `nix`
+- Bumped several dependencies past semver
+  ([#21](https://github.com/radiosilence/watchwoman/pull/21)):
+  `notify` 7 → 8, `nix`
   0.29 → 0.31, `directories` 5 → 6, `hashbrown` 0.15 → 0.17,
   `allocator-api2` 0.2 → 0.4, `sha1` 0.10 → 0.11.  Pulls in the
   refreshed `digest`/`crypto-common` stack (now `hybrid-array`-based,
@@ -64,16 +95,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   watchwoman sources today — they're inert leftovers from the 0.6.0
   arena refactor, kept in lockstep so a future use site doesn't
   silently regress them.
-- In-semver dependency refresh via `cargo update` (Cargo.lock-only)
-  folded into the same release.
-- Declared MSRV corrected 1.82 → **1.85**.  1.82 hadn't built since
-  the `hashbrown` 0.17 bump — its cargo can't even parse hashbrown's
-  manifest — so the number was a promise nothing kept.  CI now checks
-  it on every run.
-- Second in-semver refresh (Cargo.lock-only).  Drops 17 crates from
-  the tree: `getrandom` no longer pulls the `wit-bindgen` /
-  `wasm-encoder` / `wasmparser` WASI toolchain, which was never
-  reachable from a build targeting unix.
+- Two in-semver refreshes via `cargo update` (Cargo.lock-only,
+  [#20](https://github.com/radiosilence/watchwoman/pull/20),
+  [#24](https://github.com/radiosilence/watchwoman/pull/24)).  The
+  second drops 17 crates from the tree: `getrandom` no longer pulls
+  the `wit-bindgen` / `wasm-encoder` / `wasmparser` WASI toolchain,
+  which was never reachable from a build targeting unix.
 
 ## [0.6.0] - 2026-05-01
 
