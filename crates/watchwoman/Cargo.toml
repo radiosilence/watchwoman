@@ -82,9 +82,15 @@ indexmap = { version = "2", features = ["serde"] }
 #     too rather than wait for the next toolchain bump to break it.
 #     musl's own malloc returns pages to the kernel more aggressively
 #     than glibc's anyway, so the loss is small.
+#
+# `stats` is on deliberately.  It costs a counter update per allocation
+# and buys the only view we have of allocator-held memory: without it
+# `status` can't separate "watchwoman is still using this" from "the
+# allocator hasn't handed it back", which is the exact distinction that
+# took a 4 GB leak months to spot.
 [target.'cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))'.dependencies]
 tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms"] }
-tikv-jemalloc-sys = "0.6"
+tikv-jemalloc-sys = { version = "0.6", features = ["stats"] }
 
 [dev-dependencies]
 watchwoman-tests = { path = "../watchwoman-tests" }

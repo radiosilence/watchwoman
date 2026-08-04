@@ -43,7 +43,11 @@ pub fn subscribe(state: &Arc<DaemonState>, session: &Session, args: &[Value]) ->
     // The command handler itself is sync (spawn_blocking), so we grab
     // the current runtime handle explicitly to spawn the push loop.
     let runtime = tokio::runtime::Handle::current();
-    let push_root = root.clone();
+    // Weak, not strong: the tick channel this loop waits on lives in
+    // the `Root`, so holding it strongly would keep the root alive for
+    // the life of the daemon and the loop would never see the channel
+    // close.
+    let push_root = Arc::downgrade(&root);
     let push_session = session.clone();
     let push_name = name.clone();
     let push_path = root_path.clone();
@@ -83,7 +87,7 @@ pub fn subscribe(state: &Arc<DaemonState>, session: &Session, args: &[Value]) ->
 async fn run_push_loop(
     mut rx: tokio::sync::broadcast::Receiver<crate::daemon::root::TickEvent>,
     start_tick: u64,
-    root: Arc<Root>,
+    root: std::sync::Weak<Root>,
     session: Session,
     name: String,
     root_path: PathBuf,
@@ -99,6 +103,7 @@ async fn run_push_loop(
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         };
+        let Some(root) = root.upgrade() else { break };
         if session.is_closed() {
             break;
         }
@@ -147,7 +152,10 @@ async fn run_push_loop(
         }
     }
 
-    root.remove_subscription(&name);
+    // If the root is already gone the registry went with it.
+    if let Some(root) = root.upgrade() {
+        root.remove_subscription(&name);
+    }
 }
 
 pub fn unsubscribe(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {

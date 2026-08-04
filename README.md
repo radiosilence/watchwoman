@@ -210,8 +210,9 @@ and per-root `debug-root-status`:
 ```
 watchwoman 2026.03.30.00  (pid 48769, up 4d03h)
 socket:  /Users/you/.local/state/watchman/you-state/sock
-memory:  954 MB rss   cpu: 12m34s user / 4m02s system
+memory:  954 MB footprint (912 MB resident)   cpu: 12m34s user / 4m02s system
          421 MB tracked data (est) · 533 MB unaccounted (allocator / OS-held)
+         438 MB live in 601 MB mapped by jemalloc
 roots:   12 watched · 2,804,061 files (2,798,512 live, 5,549 tombstones) · 3 subs · 0 triggers
 
 ROOT                                                    FILES   GHOSTS     MEM~  SUB  TRG  HEALTH
@@ -220,12 +221,27 @@ ROOT                                                    FILES   GHOSTS     MEM~ 
 …/workspace/project-a/.worktrees/prefetch-search            0        0      0 B    0    0  dead
 ```
 
+**Footprint, not RSS, is the headline number.**  RSS counts only pages
+currently in physical memory, so an idle daemon whose heap the kernel
+has compressed or swapped reads as a few MB while still owing the
+machine gigabytes — this is what macOS' Activity Monitor shows you in
+its "Memory" column, and reporting RSS beside it hid a real leak for
+months.  Resident is printed in brackets; when the two diverge the
+difference is compressed or paged-out.
+
 The `tracked data (est)` number is watchwoman's own accounting of the
-per-entry struct + path bytes it's holding; `unaccounted` is the rest
-of RSS — allocator fragmentation, OS-held pages, BTreeMap node slop.
-A big gap there means you're looking at glibc / libmalloc, not at a
-leak.  Pass `--json` for scripting; the server always speaks JSON
-over the wire and the CLI just formats it.
+per-entry struct + path bytes it's holding, and `unaccounted` is the
+rest of the footprint.  The allocator line underneath is what tells
+you which kind of problem you have:
+
+- **live ≈ tracked data** — normal.
+- **live much larger than tracked data, with no roots watched** — a
+  leak in watchwoman.  Memory is still reachable, not merely unreturned.
+- **live small, mapped large** — the allocator is sitting on freed
+  pages.  Not a leak; a teardown purges them.
+
+Pass `--json` for scripting; the server always speaks JSON over the
+wire and the CLI just formats it.
 
 **Garbage collection is zero-conf.**  Every 60 s the daemon sweeps
 every watched root:
