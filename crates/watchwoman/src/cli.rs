@@ -484,6 +484,12 @@ fn print_status_report(v: &Value) -> anyhow::Result<()> {
     let uptime = get_i("uptime_seconds");
     let sock = get_s("sockname");
     let rss = get_i("rss_bytes");
+    // Older daemons don't send it; fall back so a new CLI against an
+    // old daemon prints RSS rather than a zero.
+    let footprint = match obj.get("footprint_bytes").and_then(Value::as_i64) {
+        Some(v) if v > 0 => v,
+        _ => rss,
+    };
     let user_ms = get_i("user_cpu_ms");
     let sys_ms = get_i("system_cpu_ms");
     let total_files = get_i("total_tracked_files");
@@ -503,6 +509,17 @@ fn print_status_report(v: &Value) -> anyhow::Result<()> {
         .and_then(|m| m.get("unaccounted_bytes"))
         .and_then(Value::as_i64)
         .unwrap_or(0);
+    let allocator = mem
+        .and_then(|m| m.get("allocator"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let alloc_allocated = mem
+        .and_then(|m| m.get("allocator_allocated_bytes"))
+        .and_then(Value::as_i64);
+    let alloc_mapped = mem
+        .and_then(|m| m.get("allocator_mapped_bytes"))
+        .and_then(Value::as_i64);
 
     let mut out = io::stdout().lock();
     writeln!(
@@ -511,9 +528,14 @@ fn print_status_report(v: &Value) -> anyhow::Result<()> {
         format_duration(uptime as u64)
     )?;
     writeln!(out, "socket:  {sock}")?;
+    // Footprint leads because it's the number the OS bills us for and
+    // the one a task manager shows; RSS trails it as the resident
+    // subset.  They diverge once the kernel compresses or swaps idle
+    // pages, and reporting only RSS hid exactly that case.
     writeln!(
         out,
-        "memory:  {} rss   cpu: {} user / {} system",
+        "memory:  {} footprint ({} resident)   cpu: {} user / {} system",
+        format_bytes(footprint as u64),
         format_bytes(rss as u64),
         format_duration_ms(user_ms as u64),
         format_duration_ms(sys_ms as u64)
@@ -524,6 +546,14 @@ fn print_status_report(v: &Value) -> anyhow::Result<()> {
             "         {} tracked data (est) · {} unaccounted (allocator / OS-held)",
             format_bytes(tree_bytes as u64),
             format_bytes(unaccounted.max(0) as u64),
+        )?;
+    }
+    if let (Some(allocated), Some(mapped)) = (alloc_allocated, alloc_mapped) {
+        writeln!(
+            out,
+            "         {} live in {} mapped by {allocator}",
+            format_bytes(allocated.max(0) as u64),
+            format_bytes(mapped.max(0) as u64),
         )?;
     }
     writeln!(

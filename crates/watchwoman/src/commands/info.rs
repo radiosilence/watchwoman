@@ -262,7 +262,7 @@ pub fn log(args: &[Value]) -> CommandResult {
 /// Returned as structured JSON; the CLI side renders it as a human
 /// report when `--json` isn't set.
 pub fn status(state: &Arc<DaemonState>) -> CommandResult {
-    let (rss_bytes, user_cpu_ms, system_cpu_ms) = self_resource_usage();
+    let usage = self_resource_usage();
 
     let mut total_files: i64 = 0;
     let mut total_live: i64 = 0;
@@ -322,9 +322,18 @@ pub fn status(state: &Arc<DaemonState>) -> CommandResult {
         roots.push(Value::Object(m));
     }
 
-    let unaccounted = rss_bytes.saturating_sub(total_tree_bytes);
+    // Unaccounted is measured against the footprint, not RSS: pages the
+    // kernel compressed are still memory we are costing the machine,
+    // and hiding them behind a small RSS is what let 4 GB of unreturned
+    // heap masquerade as an 11 MB daemon.
+    let unaccounted = usage.footprint_bytes.saturating_sub(total_tree_bytes);
+    let alloc_stats = crate::daemon::alloc::stats();
     let mut memory = IndexMap::new();
-    memory.insert("rss_bytes".into(), Value::Int(rss_bytes as i64));
+    memory.insert("rss_bytes".into(), Value::Int(usage.rss_bytes as i64));
+    memory.insert(
+        "footprint_bytes".into(),
+        Value::Int(usage.footprint_bytes as i64),
+    );
     memory.insert("tree_bytes_est".into(), Value::Int(total_tree_bytes as i64));
     memory.insert("unaccounted_bytes".into(), Value::Int(unaccounted as i64));
     memory.insert("live_entries".into(), Value::Int(total_live));
@@ -333,6 +342,18 @@ pub fn status(state: &Arc<DaemonState>) -> CommandResult {
         "entry_size_bytes".into(),
         Value::Int(crate::daemon::tree::ENTRY_SIZE as i64),
     );
+    memory.insert(
+        "allocator".into(),
+        Value::String(alloc_stats.allocator.into()),
+    );
+    let mut insert_stat = |key: &str, v: Option<u64>| {
+        if let Some(v) = v {
+            memory.insert(key.into(), Value::Int(v as i64));
+        }
+    };
+    insert_stat("allocator_allocated_bytes", alloc_stats.allocated);
+    insert_stat("allocator_active_bytes", alloc_stats.active);
+    insert_stat("allocator_mapped_bytes", alloc_stats.mapped);
 
     let reaped: Vec<Value> = state
         .reap_log()
@@ -368,9 +389,10 @@ pub fn status(state: &Arc<DaemonState>) -> CommandResult {
         ),
         ("uptime_seconds", Value::Int(state.uptime_seconds() as i64)),
         ("started_at_unix", Value::Int(state.started_at_unix as i64)),
-        ("rss_bytes", Value::Int(rss_bytes as i64)),
-        ("user_cpu_ms", Value::Int(user_cpu_ms as i64)),
-        ("system_cpu_ms", Value::Int(system_cpu_ms as i64)),
+        ("rss_bytes", Value::Int(usage.rss_bytes as i64)),
+        ("footprint_bytes", Value::Int(usage.footprint_bytes as i64)),
+        ("user_cpu_ms", Value::Int(usage.user_cpu_ms as i64)),
+        ("system_cpu_ms", Value::Int(usage.system_cpu_ms as i64)),
         ("total_tracked_files", Value::Int(total_files)),
         ("total_live_files", Value::Int(total_live)),
         ("total_tombstones", Value::Int(total_tombstones)),
@@ -410,19 +432,31 @@ fn classify_health(
     }
 }
 
-/// Read the daemon's own resource usage.  Returns `(rss_bytes,
-/// user_cpu_ms, system_cpu_ms)`.
+/// The daemon's own resource usage.
+struct SelfUsage {
+    /// Live resident set: pages currently in physical memory.
+    rss_bytes: u64,
+    /// Every dirty page charged to the process, resident or not.  This
+    /// is the number that answers "how much memory is watchwoman
+    /// costing me" — see [`current_footprint_bytes`].
+    footprint_bytes: u64,
+    user_cpu_ms: u64,
+    system_cpu_ms: u64,
+}
+
+/// Read the daemon's own resource usage.
 ///
 /// CPU times come from `getrusage(RUSAGE_SELF)` — those are cumulative
 /// counters where the kernel-reported value is exactly what we want.
 ///
-/// RSS comes from a platform-specific path: `getrusage`'s `ru_maxrss`
+/// Memory takes a platform-specific path.  `getrusage`'s `ru_maxrss`
 /// is the **peak** RSS the process has ever reached, monotonic for the
 /// lifetime of the process.  Surfacing peak as "current memory" makes
 /// the status report lie after a `watch-del-all` — operators see a
 /// huge number that never drops and assume the daemon has leaked.  We
-/// read the live resident set instead.
-fn self_resource_usage() -> (u64, u64, u64) {
+/// read the live resident set instead, plus the footprint, because on
+/// their own each tells only half the story.
+fn self_resource_usage() -> SelfUsage {
     use nix::sys::resource::{getrusage, UsageWho};
     let cpu = getrusage(UsageWho::RUSAGE_SELF).ok();
     let to_ms = |t: nix::sys::time::TimeVal| -> u64 {
@@ -430,12 +464,123 @@ fn self_resource_usage() -> (u64, u64, u64) {
         let us = t.tv_usec().max(0) as u64;
         secs.saturating_mul(1000) + us / 1000
     };
-    let (user_ms, system_ms) = match cpu {
+    let (user_cpu_ms, system_cpu_ms) = match cpu {
         Some(u) => (to_ms(u.user_time()), to_ms(u.system_time())),
         None => (0, 0),
     };
     let rss_bytes = current_rss_bytes().unwrap_or(0);
-    (rss_bytes, user_ms, system_ms)
+    SelfUsage {
+        rss_bytes,
+        // Fall back to RSS rather than 0 so the field is always a
+        // usable number; RSS is a lower bound on the footprint.
+        footprint_bytes: current_footprint_bytes().unwrap_or(rss_bytes),
+        user_cpu_ms,
+        system_cpu_ms,
+    }
+}
+
+/// Total memory charged to this process, including dirty pages the
+/// kernel has since compressed or swapped out, or `None` if the
+/// platform-specific read failed.
+///
+/// RSS alone is not enough to answer "is the daemon fat?".  An idle
+/// daemon holding gigabytes of untouched heap has almost all of it
+/// compressed away, so RSS reads as a few MB while the memory is still
+/// entirely charged to the process — this is precisely what macOS'
+/// Activity Monitor shows in its "Memory" column, and reporting RSS
+/// next to it made `status` look like it was covering something up.
+#[cfg(target_os = "macos")]
+fn current_footprint_bytes() -> Option<u64> {
+    // `TASK_VM_INFO`'s `phys_footprint` is the same ledger entry the
+    // kernel bills against a process' memory limit, and what Activity
+    // Monitor reports.  The flavor has been extended several times;
+    // `phys_footprint` arrived in rev1 at byte offset 144, so we
+    // declare the struct up to there and check the kernel wrote at
+    // least that far before trusting the field.
+    use std::mem::MaybeUninit;
+
+    #[repr(C)]
+    struct TaskVmInfoRev1 {
+        virtual_size: u64,
+        region_count: i32,
+        page_size: i32,
+        resident_size: u64,
+        resident_size_peak: u64,
+        device: u64,
+        device_peak: u64,
+        internal: u64,
+        internal_peak: u64,
+        external: u64,
+        external_peak: u64,
+        reusable: u64,
+        reusable_peak: u64,
+        purgeable_volatile_pmap: u64,
+        purgeable_volatile_resident: u64,
+        purgeable_volatile_virtual: u64,
+        compressed: u64,
+        compressed_peak: u64,
+        compressed_lifetime: u64,
+        phys_footprint: u64,
+    }
+
+    const TASK_VM_INFO: u32 = 22;
+    const WORDS: u32 = (std::mem::size_of::<TaskVmInfoRev1>() / std::mem::size_of::<u32>()) as u32;
+
+    let mut info = MaybeUninit::<TaskVmInfoRev1>::zeroed();
+    let mut count = WORDS;
+    // SAFETY: `mach_task_self()` returns this process' task port, which
+    // `task_info` always accepts.  The buffer is `WORDS` words and we
+    // pass exactly that as the count, so the kernel writes no further.
+    let kr = unsafe {
+        task_info(
+            mach_task_self(),
+            TASK_VM_INFO,
+            info.as_mut_ptr() as *mut i32,
+            &mut count,
+        )
+    };
+    // The kernel clamps `count` down to what it actually wrote.  A
+    // short write means this kernel predates rev1 and left
+    // `phys_footprint` untouched.
+    if kr != 0 || count < WORDS {
+        return None;
+    }
+    // SAFETY: `task_info` returned KERN_SUCCESS having filled `WORDS`
+    // words, which is the whole declared struct.
+    Some(unsafe { info.assume_init() }.phys_footprint)
+}
+
+/// Linux has no single footprint ledger, but resident + swapped is the
+/// same idea: pages the process dirtied and still owns, wherever the
+/// kernel has since put them.
+#[cfg(target_os = "linux")]
+fn current_footprint_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kb = |prefix: &str| -> Option<u64> {
+        let line = status.lines().find(|l| l.starts_with(prefix))?;
+        line.split_whitespace().nth(1)?.parse::<u64>().ok()
+    };
+    let rss = kb("VmRSS:")?;
+    // VmSwap is absent on kernels built without swap accounting; the
+    // resident half is still worth reporting.
+    let swap = kb("VmSwap:").unwrap_or(0);
+    Some(rss.saturating_add(swap).saturating_mul(1024))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn current_footprint_bytes() -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn mach_task_self() -> u32;
+    fn task_info(
+        target_task: u32,
+        flavor: u32,
+        task_info_out: *mut i32,
+        task_info_count: *mut u32,
+    ) -> i32;
 }
 
 /// Current resident-set size in bytes, or `None` if the platform-
@@ -466,16 +611,6 @@ fn current_rss_bytes() -> Option<u64> {
     const MACH_TASK_BASIC_INFO: u32 = 20;
     const MACH_TASK_BASIC_INFO_COUNT: u32 =
         (std::mem::size_of::<MachTaskBasicInfo>() / std::mem::size_of::<u32>()) as u32;
-
-    extern "C" {
-        fn mach_task_self() -> u32;
-        fn task_info(
-            target_task: u32,
-            flavor: u32,
-            task_info_out: *mut i32,
-            task_info_count: *mut u32,
-        ) -> i32;
-    }
 
     let mut info = MaybeUninit::<MachTaskBasicInfo>::uninit();
     let mut count = MACH_TASK_BASIC_INFO_COUNT;

@@ -165,7 +165,7 @@ impl DaemonState {
 
         self.roots.insert(path.clone(), root.clone());
 
-        watcher::spawn(root.clone(), cmd_rx);
+        watcher::spawn(&root, cmd_rx);
 
         Ok(root)
     }
