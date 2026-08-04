@@ -24,6 +24,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   silently regress them.
 - In-semver dependency refresh via `cargo update` (Cargo.lock-only)
   folded into the same release.
+- Second in-semver refresh (Cargo.lock-only).  Drops 17 crates from
+  the tree: `getrandom` no longer pulls the `wit-bindgen` /
+  `wasm-encoder` / `wasmparser` WASI toolchain, which was never
+  reachable from a build targeting unix.
 
 ## [0.6.0] - 2026-05-01
 
