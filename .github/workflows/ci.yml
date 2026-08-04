@@ -28,7 +28,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
@@ -36,7 +36,7 @@ jobs:
           toolchain: stable
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -48,7 +48,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
@@ -57,7 +57,7 @@ jobs:
           components: clippy
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -69,7 +69,7 @@ jobs:
     name: Check Formatting
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
@@ -79,6 +79,30 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+  # `rust-version` is a promise to anyone doing `cargo install`, and
+  # nothing was checking it — it read 1.82 while the tree had needed
+  # 1.85 since the hashbrown 0.17 bump.  `--all-targets` so dev-deps
+  # count too.
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: "1.85"
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Check against the declared MSRV
+        run: cargo check --workspace --all-targets
 
   # Release artifacts are built on every PR and every push to main —
   # not only when the version bumps.  A musl / linux-arm break on a
@@ -113,7 +137,7 @@ jobs:
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, platform: linux-arm64-musl }
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install musl toolchain
         if: endsWith(matrix.target, '-musl')
@@ -128,7 +152,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1

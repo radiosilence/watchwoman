@@ -24,6 +24,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   silently regress them.
 - In-semver dependency refresh via `cargo update` (Cargo.lock-only)
   folded into the same release.
+- Declared MSRV corrected 1.82 → **1.85**.  1.82 hadn't built since
+  the `hashbrown` 0.17 bump — its cargo can't even parse hashbrown's
+  manifest — so the number was a promise nothing kept.  CI now checks
+  it on every run.
 
 ## [0.6.0] - 2026-05-01
 

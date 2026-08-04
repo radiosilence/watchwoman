@@ -34,7 +34,7 @@ jobs:
       major: ${{ steps.check.outputs.major }}
       major_minor: ${{ steps.check.outputs.major_minor }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Check out the commit CI actually built, not the tip of
           # main at the time this workflow fires — avoids a race when
@@ -92,14 +92,14 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
       # Cross-workflow artifact download: pulls straight from the CI
       # run that triggered us.  No rebuild.
       - name: Download CI artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -128,7 +128,7 @@ jobs:
           git push -f origin "${TAG}"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: v${{ needs.check-version.outputs.version }}
           name: v${{ needs.check-version.outputs.version }}
@@ -144,7 +144,7 @@ jobs:
     if: needs.check-version.outputs.should_release == 'true'
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
@@ -201,7 +201,7 @@ jobs:
 
       - name: Checkout tap
         if: steps.gate.outputs.skip != 'true'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: radiosilence/homebrew-watchwoman
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -213,7 +213,7 @@ jobs:
       # release API).
       - name: Download CI artifacts
         if: steps.gate.outputs.skip != 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
