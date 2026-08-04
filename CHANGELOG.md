@@ -66,6 +66,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   silently regress them.
 - In-semver dependency refresh via `cargo update` (Cargo.lock-only)
   folded into the same release.
+- Declared MSRV corrected 1.82 → **1.85**.  1.82 hadn't built since
+  the `hashbrown` 0.17 bump — its cargo can't even parse hashbrown's
+  manifest — so the number was a promise nothing kept.  CI now checks
+  it on every run.
 - Second in-semver refresh (Cargo.lock-only).  Drops 17 crates from
   the tree: `getrandom` no longer pulls the `wit-bindgen` /
   `wasm-encoder` / `wasmparser` WASI toolchain, which was never
