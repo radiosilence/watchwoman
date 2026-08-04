@@ -65,6 +65,11 @@ fn spawn_trigger_loop(root: Arc<Root>, root_path: PathBuf, trigger: Trigger) {
 pub fn spawn_trigger_loop_ext(root: Arc<Root>, root_path: PathBuf, trigger: Trigger) {
     let rx = root.tick_tx.subscribe();
     let start_tick = root.clock.current_tick();
+    // Weak, not strong: the tick channel this loop waits on lives in
+    // the `Root`, so holding it strongly would keep the root alive for
+    // the life of the daemon and the loop would never see the channel
+    // close.
+    let root = Arc::downgrade(&root);
     tokio::runtime::Handle::current().spawn(async move {
         run_trigger(rx, start_tick, root, root_path, trigger).await;
     });
@@ -73,7 +78,7 @@ pub fn spawn_trigger_loop_ext(root: Arc<Root>, root_path: PathBuf, trigger: Trig
 async fn run_trigger(
     mut rx: tokio::sync::broadcast::Receiver<crate::daemon::root::TickEvent>,
     start_tick: u64,
-    root: Arc<Root>,
+    root: std::sync::Weak<Root>,
     root_path: PathBuf,
     trigger: Trigger,
 ) {
@@ -84,6 +89,7 @@ async fn run_trigger(
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         };
+        let Some(root) = root.upgrade() else { break };
         if !root.has_trigger(&trigger.name) {
             break;
         }

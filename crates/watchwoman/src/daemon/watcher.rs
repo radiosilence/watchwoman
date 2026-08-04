@@ -18,7 +18,15 @@ use super::root::{PathChange, Root, WatcherCommand};
 const SETTLE: Duration = Duration::from_millis(5);
 const MAX_BATCH: usize = 1024;
 
-pub fn spawn(root: Arc<Root>, mut cmd_rx: mpsc::UnboundedReceiver<WatcherCommand>) {
+/// Start the watch for `root`.
+///
+/// Takes `&Arc` rather than an owned one on purpose: nothing spawned
+/// here may hold a strong reference.  `Root`'s `Drop` is what tells
+/// these tasks to stop, so a strong `Arc` in the event loop would keep
+/// the root — and its entire file tree arena — alive for the life of
+/// the daemon, waiting for a shutdown that can't be sent until it lets
+/// go.  Every root watched would leak its full index.
+pub fn spawn(root: &Arc<Root>, mut cmd_rx: mpsc::UnboundedReceiver<WatcherCommand>) {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<notify::Result<Event>>();
 
     let root_path = root.path.clone();
@@ -30,7 +38,13 @@ pub fn spawn(root: Arc<Root>, mut cmd_rx: mpsc::UnboundedReceiver<WatcherCommand
     // dropped.  Saw it as a 10–15 % flake on the trigger integration
     // test before this barrier went in.
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<()>(0);
-    let watcher_handle = tokio::task::spawn_blocking(move || {
+    // Shutdown path for the blocking thread below.  `JoinHandle::abort`
+    // is useless here: a `spawn_blocking` task that has already started
+    // never observes cancellation, so aborting left the thread parked
+    // forever holding a live fsevents/inotify registration — one leaked
+    // thread and one leaked kernel watch per root.
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    tokio::task::spawn_blocking(move || {
         let mut watcher: RecommendedWatcher = match notify::recommended_watcher(move |res| {
             let _ = event_tx.send(res);
         }) {
@@ -52,16 +66,17 @@ pub fn spawn(root: Arc<Root>, mut cmd_rx: mpsc::UnboundedReceiver<WatcherCommand
         // watcher, the warn above being the only signal, which
         // matches the previous behaviour.
         let _ = ready_tx.send(());
-        // Park the watcher thread — dropping this task's handle drops
-        // the watcher, and we rely on cmd_rx shutdown to park.
-        std::thread::park();
+        // Hold the watcher alive until the event loop is done with it.
+        // Returning from here drops `watcher`, which is what actually
+        // unregisters the kernel-side watch.
+        let _ = stop_rx.recv();
     });
     // Block until the watcher is registered.  The blocking task above
     // runs on tokio's blocking-thread pool, so this doesn't deadlock
     // the runtime even when called from an async handler.
     let _ = ready_rx.recv();
 
-    let root_for_events = root.clone();
+    let root_for_events = Arc::downgrade(root);
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -71,24 +86,29 @@ pub fn spawn(root: Arc<Root>, mut cmd_rx: mpsc::UnboundedReceiver<WatcherCommand
                 },
                 first = event_rx.recv() => {
                     let Some(first) = first else { break };
+                    // Unregistered between the event firing and us
+                    // waking up — nothing left to apply it to.
+                    let Some(root) = root_for_events.upgrade() else { break };
                     let mut batch = Vec::with_capacity(8);
-                    collect_event(&root_for_events, first, &mut batch);
+                    collect_event(&root, first, &mut batch);
                     let deadline = tokio::time::Instant::now() + SETTLE;
                     while batch.len() < MAX_BATCH {
                         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                         if remaining.is_zero() { break; }
                         match tokio::time::timeout(remaining, event_rx.recv()).await {
-                            Ok(Some(next)) => collect_event(&root_for_events, next, &mut batch),
+                            Ok(Some(next)) => collect_event(&root, next, &mut batch),
                             Ok(None) | Err(_) => break,
                         }
                     }
                     if !batch.is_empty() {
-                        root_for_events.apply_changes(batch);
+                        root.apply_changes(batch);
                     }
                 }
             }
         }
-        watcher_handle.abort();
+        // Releases the blocking thread, dropping the notify watcher
+        // with it.
+        drop(stop_tx);
     });
 }
 

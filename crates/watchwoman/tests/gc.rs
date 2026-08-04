@@ -250,3 +250,73 @@ fn listed_roots(c: &mut watchwoman_tests::Client) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+
+/// Tearing a root down must actually free its file index.
+///
+/// Regression test for an `Arc<Root>` cycle: the watcher, trigger and
+/// subscription tasks each held a strong reference while waiting on a
+/// channel whose sender lived inside that same `Root`, so `Drop` — the
+/// thing that signalled them to stop — could never run.  Every root
+/// ever watched leaked its entire index for the life of the daemon,
+/// and RSS-based reporting hid it because the kernel compressed the
+/// untouched pages away.
+///
+/// Asserting on the allocator's live-bytes counter rather than on RSS
+/// is the point: it distinguishes "freed" from "merely paged out".
+#[test]
+fn tearing_down_a_root_frees_its_index() {
+    let h = Harness::spawn().expect("spawn daemon");
+    let scratch = Scratch::new().unwrap();
+    let mut c = h.client().unwrap();
+
+    // Big enough that the index dominates the daemon's fixed overhead
+    // (~1.5 MB of buffers and per-thread caches that teardown keeps).
+    // At 4k files that overhead was a third of the index and the
+    // signal drowned in it.
+    for i in 0..20_000 {
+        scratch
+            .write(&format!("d{}/f{i}.txt", i % 32), b"x")
+            .unwrap();
+    }
+
+    let baseline = allocated_bytes(&mut c);
+    let root_str = scratch.path().to_string_lossy().into_owned();
+    c.call("watch-project", [Value::String(root_str.clone())])
+        .unwrap();
+
+    let watched = allocated_bytes(&mut c);
+    let indexed = watched.saturating_sub(baseline);
+    assert!(
+        indexed > 256 * 1024,
+        "index of 4000 files only accounted for {indexed} bytes; \
+         the measurement is broken, not the daemon"
+    );
+
+    c.call("watch-del-all", []).unwrap();
+    // Teardown finishes on spawned tasks, so give it a moment to
+    // settle rather than racing it.
+    std::thread::sleep(std::time::Duration::from_millis(750));
+    let after = allocated_bytes(&mut c);
+
+    // Allow a slice of the index to remain: teardown is partly async
+    // and the daemon keeps a bounded reap log.  A leak of the kind
+    // this guards against retains ~all of it.
+    let retained = after.saturating_sub(baseline);
+    assert!(
+        retained < indexed / 4,
+        "watch-del-all retained {retained} of {indexed} bytes indexed \
+         — the root is still reachable from a spawned task"
+    );
+}
+
+/// Live bytes according to the allocator itself, which is the only
+/// number that separates "freed" from "swapped out".
+fn allocated_bytes(c: &mut watchwoman_tests::Client) -> u64 {
+    let resp = c.call("status", []).unwrap();
+    resp.as_object()
+        .and_then(|o| o.get("memory"))
+        .and_then(Value::as_object)
+        .and_then(|m| m.get("allocator_allocated_bytes"))
+        .and_then(Value::as_i64)
+        .expect("status is not reporting allocator_allocated_bytes") as u64
+}
