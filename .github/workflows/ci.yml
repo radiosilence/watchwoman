@@ -40,6 +40,10 @@ jobs:
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Branch-scoped caches aren't readable from other branches, so a PR
+          # saving here only evicts the main entry every PR restores from.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run tests
         run: cargo test --workspace --all-features
@@ -61,6 +65,10 @@ jobs:
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Branch-scoped caches aren't readable from other branches, so a PR
+          # saving here only evicts the main entry every PR restores from.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Lint with Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -101,6 +109,10 @@ jobs:
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Branch-scoped caches aren't readable from other branches, so a PR
+          # saving here only evicts the main entry every PR restores from.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check against the declared MSRV
         run: cargo check --workspace --all-targets
@@ -166,6 +178,10 @@ jobs:
           # found / Usage: rustup-init[EXE]".  The registry/target/git
           # caches still restore; only ~/.cargo/bin/ is skipped.
           cache-bin: "false"
+          # Six targets, so six full release target/ trees — by far the largest
+          # thing this repository puts in its 10GB cache budget, and a branch's
+          # copy is unreadable from every branch but its own.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Read workspace version
         id: ver
