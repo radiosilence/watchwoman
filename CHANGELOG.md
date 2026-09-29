@@ -5,6 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **macOS release binaries are signed with a Developer ID and notarised.** Downloaded through a browser, the ad-hoc signed binaries were quarantined and Gatekeeper refused to run them until the quarantine attribute was cleared.
+
 ## [0.7.0] - 2026-08-04
 
 0.6.0 claimed memory tracked the daemon's live working set.  It did
