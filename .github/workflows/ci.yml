@@ -193,6 +193,24 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} --bins -p watchwoman
 
+      # Developer ID signed and notarised, so the tarball runs from a browser
+      # download without clearing quarantine. Pull requests stay ad-hoc signed.
+      - name: Sign and notarise (macOS)
+        if: runner.os == 'macOS' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'schedule'
+        uses: radiosilence/blit-workflows/macos-notarise@c8a650dfa5a0fbe012c61eab28f615c1983aee18
+        with:
+          binaries: |
+            target/${{ matrix.target }}/release/watchwoman
+            target/${{ matrix.target }}/release/watchman
+            target/${{ matrix.target }}/release/watchman-wait
+            target/${{ matrix.target }}/release/watchman-make
+            target/${{ matrix.target }}/release/watchman-diag
+            target/${{ matrix.target }}/release/watchmanctl
+          certificate-p12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          api-key-p8: ${{ secrets.APPLE_API_KEY_P8 }}
+          api-key-id: ${{ secrets.APPLE_API_KEY_ID }}
+          api-issuer-id: ${{ secrets.APPLE_API_ISSUER_ID }}
       - name: Package
         id: package
         shell: bash
