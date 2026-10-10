@@ -150,6 +150,9 @@ fn collect_event(
         }
         return;
     }
+    if matches!(event.kind, EventKind::Access(_)) {
+        return;
+    }
     for abs in &event.paths {
         let Some(rel) = abs.strip_prefix(&root.path).ok().map(PathBuf::from) else {
             continue;
