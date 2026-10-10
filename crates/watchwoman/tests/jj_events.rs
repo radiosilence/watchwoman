@@ -35,6 +35,10 @@ fn jj_mode_starts_without_crawling_and_reports_later_changes() {
             .and_then(Value::as_i64),
         Some(0)
     );
+    assert_eq!(
+        roots[0].as_object().unwrap().get("index_mode"),
+        Some(&Value::String("jj-events".into()))
+    );
 
     let query = |since: Option<&str>| {
         let mut spec = IndexMap::new();
@@ -69,11 +73,45 @@ fn jj_mode_starts_without_crawling_and_reports_later_changes() {
         std::thread::sleep(Duration::from_millis(25));
     }
 
-    let stale = c
-        .call("query", [root, query(Some("c:0:0:0:0"))])
-        .unwrap();
+    let stale = c.call("query", [root, query(Some("c:0:0:0:0"))]).unwrap();
     assert_eq!(
         stale.as_object().unwrap().get("is_fresh_instance"),
+        Some(&Value::Bool(true))
+    );
+}
+
+#[test]
+fn jj_mode_requires_full_rescan_after_event_loss() {
+    let h = Harness::spawn_with(TargetBinary::Watchwoman).unwrap();
+    let scratch = Scratch::new().unwrap();
+    scratch
+        .write(".watchmanconfig", br#"{"watchwoman_vcs":"jj"}"#)
+        .unwrap();
+    let mut c = h.client().unwrap();
+    let root = Value::String(scratch.path().to_string_lossy().into());
+    c.call("watch-project", [root.clone()]).unwrap();
+    let before = c.call("clock", [root.clone()]).unwrap();
+    let clock = before
+        .as_object()
+        .unwrap()
+        .get("clock")
+        .unwrap()
+        .as_str()
+        .unwrap();
+
+    let injected = c
+        .call("debug-fsevents-inject-drop", [root.clone()])
+        .unwrap();
+    assert_eq!(
+        injected.as_object().unwrap().get("injected"),
+        Some(&Value::Bool(true))
+    );
+
+    let mut spec = IndexMap::new();
+    spec.insert("since".into(), Value::String(clock.into()));
+    let response = c.call("query", [root, Value::Object(spec)]).unwrap();
+    assert_eq!(
+        response.as_object().unwrap().get("is_fresh_instance"),
         Some(&Value::Bool(true))
     );
 }
