@@ -8,9 +8,7 @@ use watchwoman_tests::{Harness, Scratch, TargetBinary};
 fn jj_mode_starts_without_crawling_and_reports_later_changes() {
     let h = Harness::spawn_with(TargetBinary::Watchwoman).unwrap();
     let scratch = Scratch::new().unwrap();
-    scratch
-        .write(".watchmanconfig", br#"{"watchwoman_vcs":"jj"}"#)
-        .unwrap();
+    scratch.write(".jj/marker", b"").unwrap();
     scratch.write(".gitignore", b"/generated/\n").unwrap();
     scratch.write("generated/old", b"ignored by jj").unwrap();
     scratch.write("tracked.txt", b"tracked by jj").unwrap();
@@ -84,9 +82,7 @@ fn jj_mode_starts_without_crawling_and_reports_later_changes() {
 fn jj_mode_requires_full_rescan_after_event_loss() {
     let h = Harness::spawn_with(TargetBinary::Watchwoman).unwrap();
     let scratch = Scratch::new().unwrap();
-    scratch
-        .write(".watchmanconfig", br#"{"watchwoman_vcs":"jj"}"#)
-        .unwrap();
+    scratch.write(".jj/marker", b"").unwrap();
     let mut c = h.client().unwrap();
     let root = Value::String(scratch.path().to_string_lossy().into());
     c.call("watch-project", [root.clone()]).unwrap();
@@ -120,9 +116,7 @@ fn jj_mode_requires_full_rescan_after_event_loss() {
 fn jj_mode_collapses_recursively_ignored_directories_and_reloads_rules() {
     let h = Harness::spawn_with(TargetBinary::Watchwoman).unwrap();
     let scratch = Scratch::new().unwrap();
-    scratch
-        .write(".watchmanconfig", br#"{"watchwoman_vcs":"jj"}"#)
-        .unwrap();
+    scratch.write(".jj/marker", b"").unwrap();
     scratch.write(".gitignore", b"/generated/\n").unwrap();
     scratch.write("src/.gitignore", b"/cache/\n").unwrap();
     scratch.write("generated/existing", b"old").unwrap();
