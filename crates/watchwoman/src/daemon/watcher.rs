@@ -13,7 +13,7 @@ use std::time::Duration;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 
-use super::root::{PathChange, Root, WatcherCommand};
+use super::root::{PathChange, Root, WatchIgnores, WatcherCommand};
 
 const SETTLE: Duration = Duration::from_millis(5);
 const MAX_BATCH: usize = 1024;
@@ -127,7 +127,7 @@ fn collect_event(root: &Root, event: notify::Result<Event>, out: &mut Vec<PathCh
         if rel.as_os_str().is_empty() {
             continue;
         }
-        if should_ignore(&rel, &root.ignore_dirs) {
+        if should_ignore(&rel, &root.ignores) {
             continue;
         }
         match event.kind {
@@ -159,26 +159,23 @@ fn collect_event(root: &Root, event: notify::Result<Event>, out: &mut Vec<PathCh
 
 pub(crate) fn initial_scan(
     root: &Path,
-    ignore: &[String],
+    ignores: &WatchIgnores,
 ) -> Vec<(PathBuf, std::fs::Metadata, Option<String>)> {
     // Manual recursive walk so we can prune at the directory level —
     // descending into `node_modules` before filtering was dominating
     // the initial scan on any large JS project.
     let mut out = Vec::new();
-    walk(root, Path::new(""), ignore, &mut out, false);
+    walk(root, Path::new(""), ignores, &mut out, false);
     out
 }
 
-/// `shallow` is true once we've descended into a VCS directory
-/// (`.git`/`.hg`/`.svn`).  Matches real watchman's behaviour: the
-/// VCS dir itself and its immediate contents are reported, but we
-/// don't recurse deeper into them.  `ignore_dirs` from
-/// `.watchmanconfig` is applied at every depth and prunes the
-/// subtree entirely.
+/// `shallow` is true once we've descended into a configured VCS directory.
+/// Its immediate contents are reported, but deeper entries are skipped.
+/// `ignore_dirs` prunes the entire subtree.
 fn walk(
     abs_dir: &std::path::Path,
     rel_dir: &std::path::Path,
-    ignore: &[String],
+    ignores: &WatchIgnores,
     out: &mut Vec<(PathBuf, std::fs::Metadata, Option<String>)>,
     shallow: bool,
 ) {
@@ -189,7 +186,7 @@ fn walk(
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
         let rel = rel_dir.join(&name);
-        if ignore.iter().any(|d| d == name_str.as_ref()) {
+        if ignores.dirs.iter().any(|d| d == name_str.as_ref()) {
             continue;
         }
         let abs = entry.path();
@@ -204,59 +201,53 @@ fn walk(
             None
         };
         let is_real_dir = metadata.is_dir() && !metadata.file_type().is_symlink();
-        let is_vcs = IGNORE_VCS.contains(&name_str.as_ref());
+        let is_vcs = ignores.vcs.iter().any(|d| d == name_str.as_ref());
         out.push((rel.clone(), metadata, symlink_target));
         if is_real_dir && !shallow {
-            walk(&abs, &rel, ignore, out, is_vcs);
+            walk(&abs, &rel, ignores, out, is_vcs);
         }
     }
 }
 
-/// VCS directory names whose immediate contents are reported but
-/// whose subdirectories are not recursed into.  Matches upstream
-/// watchman's behaviour for `.git` etc: you see `.git/HEAD` and
-/// `.git/hooks` but not `.git/hooks/pre-commit.sample`.
-const IGNORE_VCS: &[&str] = &[".git", ".hg", ".svn"];
-
-/// Used by the fs-event code path: `extra` is `ignore_dirs` from
-/// `.watchmanconfig`.  The initial scan does the VCS-shallow thing
-/// inside [`walk`] directly; for ad-hoc events we fall back to
-/// this coarse check.
-fn should_ignore(rel: &std::path::Path, extra: &[String]) -> bool {
+fn should_ignore(rel: &std::path::Path, ignores: &WatchIgnores) -> bool {
     let comps: Vec<_> = rel.components().collect();
     for (i, comp) in comps.iter().enumerate() {
         let s = comp.as_os_str().to_string_lossy();
-        if IGNORE_VCS.contains(&s.as_ref()) {
-            // Include `.git` itself and its direct children; skip
-            // anything deeper.
-            return i + 2 < comps.len();
-        }
-        if extra.iter().any(|d| d == s.as_ref()) {
+        if ignores.dirs.iter().any(|d| d == s.as_ref()) {
             return true;
+        }
+        if ignores.vcs.iter().any(|d| d == s.as_ref()) {
+            // Include the VCS directory and its direct children.
+            return i + 2 < comps.len();
         }
     }
     false
 }
 
-pub(crate) fn load_watchman_config_ignores(root: &std::path::Path) -> Vec<String> {
+pub(crate) fn load_watchman_config_ignores(root: &std::path::Path) -> WatchIgnores {
     let path = root.join(".watchmanconfig");
     let Ok(bytes) = std::fs::read(&path) else {
-        return Vec::new();
+        return WatchIgnores::default();
     };
     let parsed: serde_json::Value = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(?e, path = ?path, "ignoring malformed .watchmanconfig");
-            return Vec::new();
+            return WatchIgnores::default();
         }
     };
-    parsed
-        .get("ignore_dirs")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
+    let mut ignores = WatchIgnores::default();
+    if let Some(dirs) = parsed.get("ignore_dirs").and_then(|v| v.as_array()) {
+        ignores.dirs = dirs
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect();
+    }
+    if let Some(vcs) = parsed.get("ignore_vcs").and_then(|v| v.as_array()) {
+        ignores.vcs = vcs
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect();
+    }
+    ignores
 }
