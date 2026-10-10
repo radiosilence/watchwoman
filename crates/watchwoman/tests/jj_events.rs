@@ -115,3 +115,70 @@ fn jj_mode_requires_full_rescan_after_event_loss() {
         Some(&Value::Bool(true))
     );
 }
+
+#[test]
+fn jj_mode_collapses_recursively_ignored_directories_and_reloads_rules() {
+    let h = Harness::spawn_with(TargetBinary::Watchwoman).unwrap();
+    let scratch = Scratch::new().unwrap();
+    scratch
+        .write(".watchmanconfig", br#"{"watchwoman_vcs":"jj"}"#)
+        .unwrap();
+    scratch.write(".gitignore", b"/generated/\n").unwrap();
+    scratch.write("src/.gitignore", b"/cache/\n").unwrap();
+    scratch.write("generated/existing", b"old").unwrap();
+    scratch.write("src/cache/existing", b"old").unwrap();
+
+    let mut c = h.client().unwrap();
+    let root = Value::String(scratch.path().to_string_lossy().into());
+    c.call("watch-project", [root.clone()]).unwrap();
+    let initial = c.call("clock", [root.clone()]).unwrap();
+    let clock = initial
+        .as_object()
+        .unwrap()
+        .get("clock")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    scratch.write("generated/one", b"new").unwrap();
+    scratch.write("generated/two", b"new").unwrap();
+    scratch.write("src/cache/one", b"new").unwrap();
+    let query = |since: &str| {
+        let mut spec = IndexMap::new();
+        spec.insert("since".into(), Value::String(since.into()));
+        spec.insert(
+            "fields".into(),
+            Value::Array(vec![Value::String("name".into())]),
+        );
+        Value::Object(spec)
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let collapsed_clock = loop {
+        let response = c.call("query", [root.clone(), query(&clock)]).unwrap();
+        let result = response.as_object().unwrap();
+        let files = result.get("files").unwrap().as_array().unwrap();
+        let names: Vec<_> = files.iter().filter_map(Value::as_str).collect();
+        if names.contains(&"generated/.gitignore") && names.contains(&"src/cache/.gitignore") {
+            assert!(!names.contains(&"generated/one"));
+            assert!(!names.contains(&"generated/two"));
+            assert!(!names.contains(&"src/cache/one"));
+            break result.get("clock").unwrap().as_str().unwrap().to_owned();
+        }
+        assert!(Instant::now() < deadline, "ignored events were not collapsed: {names:?}");
+        std::thread::sleep(Duration::from_millis(25));
+    };
+
+    scratch.write("src/.gitignore", b"").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let response = c
+            .call("query", [root.clone(), query(&collapsed_clock)])
+            .unwrap();
+        if response.as_object().unwrap().get("is_fresh_instance") == Some(&Value::Bool(true)) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "ignore-rule change did not invalidate the index");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
