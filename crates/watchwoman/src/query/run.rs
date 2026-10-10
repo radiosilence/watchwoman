@@ -5,7 +5,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 use watchwoman_protocol::Value;
 
-use super::expr::{self, Expr};
+use super::expr::{self, Expr, MatchScope};
 use super::field::{self, Field};
 use super::generator::Generators;
 use crate::commands::CommandError;
@@ -24,6 +24,31 @@ pub struct QuerySpec {
     pub dedup_results: bool,
     pub omit_changed_files: bool,
     pub case_sensitive: bool,
+}
+
+impl QuerySpec {
+    pub fn is_jj_fsmonitor_query(&self) -> bool {
+        let Expr::Not(inner) = &self.expression else {
+            return false;
+        };
+        let Expr::AnyOf(excludes) = inner.as_ref() else {
+            return false;
+        };
+        if excludes.len() != 3 {
+            return false;
+        }
+        let has_names = excludes.iter().any(|part| {
+            matches!(part, Expr::Name { names, scope: MatchScope::Wholename, .. }
+                if names.len() == 2 && names.contains(&".git".to_owned()) && names.contains(&".jj".to_owned()))
+        });
+        let has_git = excludes
+            .iter()
+            .any(|part| matches!(part, Expr::Dirname { path, .. } if path == ".git"));
+        let has_jj = excludes
+            .iter()
+            .any(|part| matches!(part, Expr::Dirname { path, .. } if path == ".jj"));
+        has_names && has_git && has_jj
+    }
 }
 
 #[derive(Debug)]
@@ -100,10 +125,13 @@ pub fn run(root: &Arc<Root>, spec: &QuerySpec) -> QueryResult {
     let scm_allowed = resolve_scm_set(root, spec);
 
     let tree = root.tree.read();
+    let observed_tick = root.clock.current_tick();
     let mut files = Vec::new();
     let since_tick =
         cursor_since.or_else(|| spec.since.as_ref().map(|s| s.tick_against(&root.clock)));
-    let is_fresh_instance = since_tick.is_none();
+    let is_fresh_instance = since_tick.is_none()
+        || (root.is_jj_events()
+            && since_tick.is_some_and(|tick| tick == 0 || tick < root.oldest_available_tick()));
     let include_dirs = spec.always_include_directories;
 
     let rel_root = spec.relative_root.as_deref();
@@ -166,12 +194,12 @@ pub fn run(root: &Arc<Root>, spec: &QuerySpec) -> QueryResult {
     // After a query resolves, any named cursor advances to the tick
     // we just observed so the next query only sees newer changes.
     if let Some(name) = cursor_name {
-        root.set_cursor(&name, root.clock.current_tick());
+        root.set_cursor(&name, observed_tick);
     }
 
     QueryResult {
         files,
-        clock: root.clock_string(),
+        clock: root.clock.encode(observed_tick),
         is_fresh_instance,
     }
 }

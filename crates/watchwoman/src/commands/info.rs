@@ -308,6 +308,17 @@ pub fn status(state: &Arc<DaemonState>) -> CommandResult {
         m.insert("live_files".into(), Value::Int(live));
         m.insert("tombstones".into(), Value::Int(tombstones));
         m.insert("tree_bytes_est".into(), Value::Int(tree_bytes as i64));
+        m.insert(
+            "index_mode".into(),
+            Value::String(
+                if root.is_jj_events() {
+                    "jj-events"
+                } else {
+                    "full"
+                }
+                .into(),
+            ),
+        );
         m.insert("clock".into(), Value::String(root.clock_string()));
         m.insert("subscriptions".into(), Value::Int(subs));
         m.insert("triggers".into(), Value::Int(triggers));

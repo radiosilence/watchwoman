@@ -111,7 +111,7 @@ fn dispatch_inner(state: &Arc<DaemonState>, session: &Session, pdu: Value) -> Co
         "debug-set-subscriptions-paused" => Ok(obj([("paused", Value::Bool(false))])),
         "debug-contenthash" => debug::contenthash(state, args),
         "debug-symlink-target-cache" => Ok(obj([("entries", Value::Array(vec![]))])),
-        "debug-fsevents-inject-drop" => Ok(obj([("injected", Value::Bool(false))])),
+        "debug-fsevents-inject-drop" => debug::inject_drop(state, args),
         "debug-kqueue-and-fsevents-recrawl" => debug::recrawl(state, args),
         // Not documented; exists so integration tests can force a GC
         // sweep without waiting for the 60 s timer.

@@ -583,8 +583,8 @@ fn print_status_report(v: &Value) -> anyhow::Result<()> {
     } else {
         writeln!(
             out,
-            "{:<54} {:>10} {:>8} {:>8} {:>4} {:>4}  HEALTH",
-            "ROOT", "FILES", "GHOSTS", "MEM~", "SUB", "TRG"
+            "{:<54} {:>10} {:>8} {:>8} {:>4} {:>4}  {:<9} HEALTH",
+            "ROOT", "FILES", "GHOSTS", "MEM~", "SUB", "TRG", "MODE"
         )?;
         for r in roots {
             let Some(ro) = r.as_object() else { continue };
@@ -598,15 +598,20 @@ fn print_status_report(v: &Value) -> anyhow::Result<()> {
             let subs = ro.get("subscriptions").and_then(Value::as_i64).unwrap_or(0);
             let trig = ro.get("triggers").and_then(Value::as_i64).unwrap_or(0);
             let health = ro.get("health").and_then(Value::as_str).unwrap_or("?");
+            let mode = ro
+                .get("index_mode")
+                .and_then(Value::as_str)
+                .unwrap_or("full");
             writeln!(
                 out,
-                "{:<54} {:>10} {:>8} {:>8} {:>4} {:>4}  {}",
+                "{:<54} {:>10} {:>8} {:>8} {:>4} {:>4}  {:<9} {}",
                 truncate_left(path, 54),
                 format_count(num as u64),
                 format_count(tomb.max(0) as u64),
                 format_bytes(mem.max(0) as u64),
                 subs,
                 trig,
+                mode,
                 health
             )?;
         }

@@ -11,6 +11,25 @@ brew install radiosilence/watchwoman/watchwoman
 
 ## Why replace watchman
 
+### Jujutsu worktrees need no `.watchmanconfig`
+
+When a watched root contains `.jj`, watchwoman starts with a small event
+index instead of crawling the working tree. Stock `jj` continues to use
+its Watchman fsmonitor backend; no `jj` patch or per-repository
+`ignore_dirs` list is needed. Watchwoman discovers nested `.gitignore`
+files along changed paths. Changes inside an ignored directory become
+one directory-rescan signal, so `jj` can check tracked files there using
+its own working-copy state and sparse rules. Editing a `.gitignore`,
+losing filesystem events, or exhausting the bounded event index tells
+`jj` to do a fresh scan.
+
+If another Watchman client asks for a general query or installs a
+subscription or trigger in the same root, watchwoman builds the full
+index for that root and keeps using it for all clients. `watchwoman
+status` shows `jj-events` or `full` for each root. Filesystem events
+still come from the recursive OS watch; the smaller scope refers to
+watchwoman's in-memory index and the paths passed to `jj`.
+
 | Pain                               | watchman                                                                                             | watchwoman                                                                                                 |
 |------------------------------------|------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|
 | **Memory**                         | Append-only cache grows unbounded — routinely 1–3 GB after a workday on active repos.                | One `BTreeMap<PathBuf, FileEntry>` per root, bounded by live file count. No historical ballast.            |
@@ -140,7 +159,9 @@ open slice.
       `debug-kqueue-and-fsevents-recrawl`, `debug-gc-tick`.
 - [x] Debug stubs (shape parity, no behaviour): `debug-set-parallel-crawl`,
       `debug-set-subscriptions-paused`, `debug-symlink-target-cache`,
-      `debug-fsevents-inject-drop`, `debug-watcher-info-clear`.
+      `debug-watcher-info-clear`.
+- [x] `debug-fsevents-inject-drop` invalidates a `jj` event index so the
+      next query requests a fresh scan.
 - [ ] `debug-drop-privs`, `debug-poison` — refuse; we never run as root and don't self-corrupt by design.
 
 ### Query language

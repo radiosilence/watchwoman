@@ -10,6 +10,7 @@ use anyhow::Context;
 pub mod alloc;
 pub mod clock;
 pub mod gc;
+pub mod jj_scope;
 pub mod root;
 pub mod scm;
 pub mod server;

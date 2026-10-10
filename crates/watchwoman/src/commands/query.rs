@@ -21,6 +21,9 @@ pub fn query(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {
         .get(1)
         .ok_or_else(|| CommandError::BadArgs("query requires a spec object".into()))?;
     let spec = query::parse_spec(raw)?;
+    if root.is_jj_events() && !spec.is_jj_fsmonitor_query() {
+        root.promote_to_full();
+    }
     let result = query::run(&root, &spec);
     Ok(query::run::result_to_pdu(&root_path, result))
 }
@@ -48,6 +51,7 @@ pub fn find(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {
         );
     }
     let spec = query::parse_spec(&Value::Object(spec_obj))?;
+    root.promote_to_full();
     let result = query::run(&root, &spec);
     Ok(query::run::result_to_pdu(&root_path, result))
 }
@@ -68,6 +72,7 @@ pub fn since(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {
     let mut spec_obj = IndexMap::new();
     spec_obj.insert("since".to_owned(), Value::String(clock.to_owned()));
     let spec = query::parse_spec(&Value::Object(spec_obj))?;
+    root.promote_to_full();
     let result = query::run(&root, &spec);
     Ok(query::run::result_to_pdu(&root_path, result))
 }

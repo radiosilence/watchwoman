@@ -26,6 +26,7 @@ use crate::query;
 pub fn subscribe(state: &Arc<DaemonState>, session: &Session, args: &[Value]) -> CommandResult {
     let (root_path, root, name, raw_spec) = parse_subscribe_args(state, args)?;
     let parsed = query::parse_spec(&raw_spec)?;
+    root.promote_to_full();
     let initial = query::run(&root, &parsed);
 
     root.add_subscription(SubscriptionSpec {
@@ -140,7 +141,10 @@ async fn run_push_loop(
         );
         pdu.insert("subscription".into(), Value::String(name.clone()));
         pdu.insert("clock".into(), Value::String(result.clock));
-        pdu.insert("is_fresh_instance".into(), Value::Bool(false));
+        pdu.insert(
+            "is_fresh_instance".into(),
+            Value::Bool(result.is_fresh_instance),
+        );
         pdu.insert("unilateral".into(), Value::Bool(true));
         pdu.insert(
             "root".into(),
