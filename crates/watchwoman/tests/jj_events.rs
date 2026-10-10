@@ -4,6 +4,41 @@ use indexmap::IndexMap;
 use watchwoman_protocol::Value;
 use watchwoman_tests::{Harness, Scratch, TargetBinary};
 
+fn jj_query(since: Option<&str>) -> Value {
+    let exclude = Value::Array(vec![
+        Value::String("not".into()),
+        Value::Array(vec![
+            Value::String("anyof".into()),
+            Value::Array(vec![
+                Value::String("name".into()),
+                Value::Array(vec![
+                    Value::String(".git".into()),
+                    Value::String(".jj".into()),
+                ]),
+                Value::String("wholename".into()),
+            ]),
+            Value::Array(vec![
+                Value::String("dirname".into()),
+                Value::String(".git".into()),
+            ]),
+            Value::Array(vec![
+                Value::String("dirname".into()),
+                Value::String(".jj".into()),
+            ]),
+        ]),
+    ]);
+    let mut spec = IndexMap::new();
+    spec.insert("expression".into(), exclude);
+    spec.insert(
+        "fields".into(),
+        Value::Array(vec![Value::String("name".into())]),
+    );
+    if let Some(since) = since {
+        spec.insert("since".into(), Value::String(since.into()));
+    }
+    Value::Object(spec)
+}
+
 #[test]
 fn jj_mode_starts_without_crawling_and_reports_later_changes() {
     let h = Harness::spawn_with(TargetBinary::Watchwoman).unwrap();
@@ -38,18 +73,7 @@ fn jj_mode_starts_without_crawling_and_reports_later_changes() {
         Some(&Value::String("jj-events".into()))
     );
 
-    let query = |since: Option<&str>| {
-        let mut spec = IndexMap::new();
-        spec.insert(
-            "fields".into(),
-            Value::Array(vec![Value::String("name".into())]),
-        );
-        if let Some(since) = since {
-            spec.insert("since".into(), Value::String(since.into()));
-        }
-        Value::Object(spec)
-    };
-    let initial = c.call("query", [root.clone(), query(None)]).unwrap();
+    let initial = c.call("query", [root.clone(), jj_query(None)]).unwrap();
     let initial = initial.as_object().unwrap();
     assert_eq!(initial.get("is_fresh_instance"), Some(&Value::Bool(true)));
     assert!(initial.get("files").unwrap().as_array().unwrap().is_empty());
@@ -59,7 +83,7 @@ fn jj_mode_starts_without_crawling_and_reports_later_changes() {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let response = c
-            .call("query", [root.clone(), query(Some(&clock))])
+            .call("query", [root.clone(), jj_query(Some(&clock))])
             .unwrap();
         let result = response.as_object().unwrap();
         let files = result.get("files").unwrap().as_array().unwrap();
@@ -71,7 +95,9 @@ fn jj_mode_starts_without_crawling_and_reports_later_changes() {
         std::thread::sleep(Duration::from_millis(25));
     }
 
-    let stale = c.call("query", [root, query(Some("c:0:0:0:0"))]).unwrap();
+    let stale = c
+        .call("query", [root, jj_query(Some("c:0:0:0:0"))])
+        .unwrap();
     assert_eq!(
         stale.as_object().unwrap().get("is_fresh_instance"),
         Some(&Value::Bool(true))
@@ -103,9 +129,7 @@ fn jj_mode_requires_full_rescan_after_event_loss() {
         Some(&Value::Bool(true))
     );
 
-    let mut spec = IndexMap::new();
-    spec.insert("since".into(), Value::String(clock.into()));
-    let response = c.call("query", [root, Value::Object(spec)]).unwrap();
+    let response = c.call("query", [root, jj_query(Some(clock))]).unwrap();
     assert_eq!(
         response.as_object().unwrap().get("is_fresh_instance"),
         Some(&Value::Bool(true))
@@ -131,19 +155,28 @@ fn jj_mode_reports_deletion_of_a_file_it_never_indexed() {
         .unwrap();
 
     std::fs::remove_file(scratch.path().join("tracked.txt")).unwrap();
-    let mut spec = IndexMap::new();
-    spec.insert("since".into(), Value::String(clock.into()));
-    spec.insert("fields".into(), Value::Array(vec![Value::String("name".into())]));
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let response = c
-            .call("query", [root.clone(), Value::Object(spec.clone())])
+            .call("query", [root.clone(), jj_query(Some(clock))])
             .unwrap();
-        let files = response.as_object().unwrap().get("files").unwrap().as_array().unwrap();
-        if files.iter().any(|file| file.as_str() == Some("tracked.txt")) {
+        let files = response
+            .as_object()
+            .unwrap()
+            .get("files")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        if files
+            .iter()
+            .any(|file| file.as_str() == Some("tracked.txt"))
+        {
             break;
         }
-        assert!(Instant::now() < deadline, "preexisting deletion was not reported");
+        assert!(
+            Instant::now() < deadline,
+            "preexisting deletion was not reported"
+        );
         std::thread::sleep(Duration::from_millis(25));
     }
 }
@@ -174,18 +207,11 @@ fn jj_mode_collapses_recursively_ignored_directories_and_reloads_rules() {
     scratch.write("generated/one", b"new").unwrap();
     scratch.write("generated/two", b"new").unwrap();
     scratch.write("src/cache/one", b"new").unwrap();
-    let query = |since: &str| {
-        let mut spec = IndexMap::new();
-        spec.insert("since".into(), Value::String(since.into()));
-        spec.insert(
-            "fields".into(),
-            Value::Array(vec![Value::String("name".into())]),
-        );
-        Value::Object(spec)
-    };
     let deadline = Instant::now() + Duration::from_secs(10);
     let collapsed_clock = loop {
-        let response = c.call("query", [root.clone(), query(&clock)]).unwrap();
+        let response = c
+            .call("query", [root.clone(), jj_query(Some(&clock))])
+            .unwrap();
         let result = response.as_object().unwrap();
         let files = result.get("files").unwrap().as_array().unwrap();
         let names: Vec<_> = files.iter().filter_map(Value::as_str).collect();
@@ -206,7 +232,7 @@ fn jj_mode_collapses_recursively_ignored_directories_and_reloads_rules() {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let response = c
-            .call("query", [root.clone(), query(&collapsed_clock)])
+            .call("query", [root.clone(), jj_query(Some(&collapsed_clock))])
             .unwrap();
         if response.as_object().unwrap().get("is_fresh_instance") == Some(&Value::Bool(true)) {
             break;
@@ -217,4 +243,43 @@ fn jj_mode_collapses_recursively_ignored_directories_and_reloads_rules() {
         );
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+#[test]
+fn a_general_watchman_query_promotes_a_jj_root_to_a_full_index() {
+    let h = Harness::spawn_with(TargetBinary::Watchwoman).unwrap();
+    let scratch = Scratch::new().unwrap();
+    scratch.write(".jj/marker", b"").unwrap();
+    scratch.write("preexisting.txt", b"old").unwrap();
+    let mut c = h.client().unwrap();
+    let root = Value::String(scratch.path().to_string_lossy().into());
+    c.call("watch-project", [root.clone()]).unwrap();
+
+    let mut spec = IndexMap::new();
+    spec.insert(
+        "fields".into(),
+        Value::Array(vec![Value::String("name".into())]),
+    );
+    let result = c.call("query", [root, Value::Object(spec)]).unwrap();
+    assert!(result
+        .as_object()
+        .unwrap()
+        .get("files")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|file| file.as_str() == Some("preexisting.txt")));
+    let status = c.call("status", []).unwrap();
+    let roots = status
+        .as_object()
+        .unwrap()
+        .get("roots")
+        .unwrap()
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        roots[0].as_object().unwrap().get("index_mode"),
+        Some(&Value::String("full".into()))
+    );
 }
