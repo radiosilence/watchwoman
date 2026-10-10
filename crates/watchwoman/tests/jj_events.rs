@@ -113,6 +113,42 @@ fn jj_mode_requires_full_rescan_after_event_loss() {
 }
 
 #[test]
+fn jj_mode_reports_deletion_of_a_file_it_never_indexed() {
+    let h = Harness::spawn_with(TargetBinary::Watchwoman).unwrap();
+    let scratch = Scratch::new().unwrap();
+    scratch.write(".jj/marker", b"").unwrap();
+    scratch.write("tracked.txt", b"preexisting").unwrap();
+    let mut c = h.client().unwrap();
+    let root = Value::String(scratch.path().to_string_lossy().into());
+    c.call("watch-project", [root.clone()]).unwrap();
+    let initial = c.call("clock", [root.clone()]).unwrap();
+    let clock = initial
+        .as_object()
+        .unwrap()
+        .get("clock")
+        .unwrap()
+        .as_str()
+        .unwrap();
+
+    std::fs::remove_file(scratch.path().join("tracked.txt")).unwrap();
+    let mut spec = IndexMap::new();
+    spec.insert("since".into(), Value::String(clock.into()));
+    spec.insert("fields".into(), Value::Array(vec![Value::String("name".into())]));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let response = c
+            .call("query", [root.clone(), Value::Object(spec.clone())])
+            .unwrap();
+        let files = response.as_object().unwrap().get("files").unwrap().as_array().unwrap();
+        if files.iter().any(|file| file.as_str() == Some("tracked.txt")) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "preexisting deletion was not reported");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
 fn jj_mode_collapses_recursively_ignored_directories_and_reloads_rules() {
     let h = Harness::spawn_with(TargetBinary::Watchwoman).unwrap();
     let scratch = Scratch::new().unwrap();
@@ -159,7 +195,10 @@ fn jj_mode_collapses_recursively_ignored_directories_and_reloads_rules() {
             assert!(!names.contains(&"src/cache/one"));
             break result.get("clock").unwrap().as_str().unwrap().to_owned();
         }
-        assert!(Instant::now() < deadline, "ignored events were not collapsed: {names:?}");
+        assert!(
+            Instant::now() < deadline,
+            "ignored events were not collapsed: {names:?}"
+        );
         std::thread::sleep(Duration::from_millis(25));
     };
 
@@ -172,7 +211,10 @@ fn jj_mode_collapses_recursively_ignored_directories_and_reloads_rules() {
         if response.as_object().unwrap().get("is_fresh_instance") == Some(&Value::Bool(true)) {
             break;
         }
-        assert!(Instant::now() < deadline, "ignore-rule change did not invalidate the index");
+        assert!(
+            Instant::now() < deadline,
+            "ignore-rule change did not invalidate the index"
+        );
         std::thread::sleep(Duration::from_millis(25));
     }
 }
