@@ -152,10 +152,8 @@ fn trigger_list_and_del() {
         .call("trigger-del", [root.clone(), Value::String("t1".into())])
         .unwrap();
     assert_eq!(
-        del.as_object()
-            .and_then(|o| o.get("deleted"))
-            .and_then(Value::as_i64),
-        Some(1)
+        del.as_object().and_then(|o| o.get("deleted")),
+        Some(&Value::Bool(true))
     );
     let list2 = c.call("trigger-list", [root]).unwrap();
     let triggers2 = list2
