@@ -7,7 +7,7 @@ use anyhow::Context;
 use clap::{CommandFactory, Parser};
 use clap_complete::{generate, Shell};
 use indexmap::IndexMap;
-use watchwoman_protocol::{json, Value};
+use watchwoman_protocol::{bser, json, Value};
 
 use crate::sock;
 
@@ -36,7 +36,7 @@ pub struct Cli {
     )]
     pub sockname: Option<String>,
 
-    /// Select wire encoding for socket output. Defaults to JSON for CLI use.
+    /// Select the encoding for stdout. Defaults to JSON for CLI use.
     #[arg(long, global = true, default_value = "json")]
     pub output_encoding: Encoding,
 
@@ -89,6 +89,7 @@ pub struct Cli {
 pub enum Encoding {
     Json,
     Bser,
+    #[value(alias = "bser-v2")]
     Bser2,
 }
 
@@ -407,7 +408,13 @@ pub fn run() -> anyhow::Result<ExitCode> {
     // `-j` / `--json-command` reads the PDU from stdin and skips
     // subcommand parsing. Mutually exclusive with a subcommand.
     if cli.json_command {
-        return run_stdin_json(&sock_path, cli.no_pretty, cli.no_spawn, cli.persistent);
+        return run_stdin_json(
+            &sock_path,
+            cli.no_pretty,
+            cli.no_spawn,
+            cli.persistent,
+            cli.output_encoding,
+        );
     }
 
     let Some(cmd) = cli.command else {
@@ -429,13 +436,16 @@ pub fn run() -> anyhow::Result<ExitCode> {
         Command::InstallAgent => install_launch_agent(),
         #[cfg(target_os = "macos")]
         Command::UninstallAgent => uninstall_launch_agent(),
-        Command::Status { json } => run_status(&sock_path, cli.no_spawn, json),
+        Command::Status { json } if matches!(cli.output_encoding, Encoding::Json) => {
+            run_status(&sock_path, cli.no_spawn, json)
+        }
         other => run_client(
             &other,
             &sock_path,
             cli.no_pretty,
             cli.no_spawn,
             cli.persistent,
+            cli.output_encoding,
         ),
     }
 }
@@ -738,9 +748,17 @@ fn run_client(
     no_pretty: bool,
     no_spawn: bool,
     persistent: bool,
+    output_encoding: Encoding,
 ) -> anyhow::Result<ExitCode> {
     let pdu = build_pdu(cmd)?;
-    send_and_print(&pdu, sock_path, no_pretty, no_spawn, persistent)
+    send_and_print(
+        &pdu,
+        sock_path,
+        no_pretty,
+        no_spawn,
+        persistent,
+        output_encoding,
+    )
 }
 
 fn run_stdin_json(
@@ -748,6 +766,7 @@ fn run_stdin_json(
     no_pretty: bool,
     no_spawn: bool,
     persistent: bool,
+    output_encoding: Encoding,
 ) -> anyhow::Result<ExitCode> {
     let mut buf = String::new();
     io::stdin()
@@ -759,7 +778,14 @@ fn run_stdin_json(
     }
     let json: serde_json::Value = serde_json::from_str(trimmed).context("parsing stdin PDU")?;
     let pdu = json_to_value(json);
-    send_and_print(&pdu, sock_path, no_pretty, no_spawn, persistent)
+    send_and_print(
+        &pdu,
+        sock_path,
+        no_pretty,
+        no_spawn,
+        persistent,
+        output_encoding,
+    )
 }
 
 fn send_and_print(
@@ -768,6 +794,7 @@ fn send_and_print(
     no_pretty: bool,
     no_spawn: bool,
     persistent: bool,
+    output_encoding: Encoding,
 ) -> anyhow::Result<ExitCode> {
     let stream = connect_or_spawn(sock_path, no_spawn)?;
     // No read timeout in persistent mode — we want to block waiting
@@ -786,7 +813,7 @@ fn send_and_print(
     let mut reader = std::io::BufReader::new(stream);
     let response = json::read_pdu(&mut reader)?.context("daemon closed connection early")?;
 
-    print_response(&response, no_pretty)?;
+    print_encoded_response(&response, no_pretty, output_encoding)?;
     let err_present = response
         .as_object()
         .is_some_and(|o| o.contains_key("error"));
@@ -795,7 +822,7 @@ fn send_and_print(
         // Drain subsequent unilateral PDUs until the daemon closes the
         // connection or the user hits SIGINT.
         while let Some(v) = json::read_pdu(&mut reader)? {
-            print_response(&v, no_pretty)?;
+            print_encoded_response(&v, no_pretty, output_encoding)?;
         }
     }
 
@@ -816,7 +843,7 @@ fn build_pdu(cmd: &Command) -> anyhow::Result<Value> {
         Command::InstallAgent | Command::UninstallAgent => {
             unreachable!("handled by caller")
         }
-        Command::Status { .. } => unreachable!("handled by run_status"),
+        Command::Status { .. } => parts.push(Value::String("status".into())),
         Command::GetSockname => parts.push(Value::String("get-sockname".into())),
         Command::GetPid => parts.push(Value::String("get-pid".into())),
         Command::Version { required, optional } => {
@@ -1058,6 +1085,18 @@ fn absolutise(path: &str) -> String {
             }
         }
     }
+}
+
+fn print_encoded_response(v: &Value, no_pretty: bool, encoding: Encoding) -> anyhow::Result<()> {
+    let version = match encoding {
+        Encoding::Json => return print_response(v, no_pretty),
+        Encoding::Bser => watchwoman_protocol::Encoding::BserV1,
+        Encoding::Bser2 => watchwoman_protocol::Encoding::BserV2,
+    };
+    let mut out = io::stdout().lock();
+    bser::write_pdu(&mut out, v, version)?;
+    out.flush()?;
+    Ok(())
 }
 
 fn print_response(v: &Value, no_pretty: bool) -> anyhow::Result<()> {
