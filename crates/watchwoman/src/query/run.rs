@@ -129,9 +129,18 @@ pub fn run(root: &Arc<Root>, spec: &QuerySpec) -> QueryResult {
     let mut files = Vec::new();
     let since_tick =
         cursor_since.or_else(|| spec.since.as_ref().map(|s| s.tick_against(&root.clock)));
-    let is_fresh_instance = since_tick.is_none_or(|tick| {
-        tick < root.oldest_available_tick() || (tick == 0 && root.is_jj_events())
-    });
+    // SCM clocks and new cursors filter by path or start from nothing;
+    // only a clock on the tick axis can predate what the index still holds.
+    let clock_tick = match (cursor_since, &spec.since) {
+        (Some(tick), _) => (tick > 0).then_some(tick),
+        (None, Some(since @ (ClockSpec::Tick(_) | ClockSpec::Full { .. }))) => {
+            Some(since.tick_against(&root.clock))
+        }
+        _ => None,
+    };
+    let is_fresh_instance = since_tick.is_none()
+        || (since_tick == Some(0) && root.is_jj_events())
+        || clock_tick.is_some_and(|tick| tick < root.oldest_available_tick());
     let include_dirs = spec.always_include_directories;
 
     let rel_root = spec.relative_root.as_deref();
