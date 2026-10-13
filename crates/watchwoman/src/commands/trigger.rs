@@ -115,6 +115,8 @@ async fn run_trigger(
             }
         };
         let result = query::run(&root, &parsed);
+        // The tick the query observed, so ticks buffered while a command ran
+        // are skipped rather than each re-running a query that covers them.
         last_tick = crate::daemon::clock::ClockSpec::parse(&result.clock).tick_against(&root.clock);
 
         let filenames = collect_names(&result.files);

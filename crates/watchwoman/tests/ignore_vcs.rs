@@ -53,5 +53,9 @@ fn configured_vcs_directories_are_watched_shallowly() {
         observed = names();
     }
     assert!(observed.iter().any(|name| name == "visible.txt"));
+    // The two writes may land in separate batches; give the first a chance
+    // to arrive before asserting it was ignored.
+    std::thread::sleep(Duration::from_millis(200));
+    observed = names();
     assert!(!observed.iter().any(|name| name == ".custom-vcs/repo/late"));
 }
