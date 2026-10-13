@@ -226,6 +226,9 @@ impl Root {
             );
         }
         *tree = fresh;
+        // Deletions recorded by the event index are gone with it, so a
+        // clock from before the crawl can only be answered afresh.
+        self.oldest_available_tick.store(tick, Ordering::Release);
         self.jj_events.store(false, Ordering::Release);
     }
 
@@ -236,15 +239,17 @@ impl Root {
     /// `TickEvent` broadcast, not by re-reading the tree.  Returns
     /// `(watermark, removed)` so callers can log what happened.
     pub fn prune_tombstones(&self) -> (u64, usize) {
+        // jj holds plain clocks rather than named cursors, so the watermark
+        // would be the current tick and every sweep would force jj into a
+        // full scan. The event index is bounded by its own caps instead.
+        if self.is_jj_events() {
+            return (self.clock.current_tick(), 0);
+        }
         let mut watermark = self.clock.current_tick();
         for &t in self.cursors.read().values() {
             watermark = watermark.min(t);
         }
         let removed = self.tree.write().prune_tombstones_before(watermark);
-        if self.is_jj_events() && removed > 0 {
-            self.oldest_available_tick
-                .fetch_max(watermark, Ordering::AcqRel);
-        }
         (watermark, removed)
     }
 

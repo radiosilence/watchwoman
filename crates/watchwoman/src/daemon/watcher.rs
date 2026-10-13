@@ -165,12 +165,6 @@ fn collect_event(
         if (jj_mode && is_jj_internal(&rel)) || (!jj_mode && should_ignore(&rel, &root.ignores)) {
             continue;
         }
-        if jj_mode && rel.file_name().is_some_and(|name| name == ".gitignore") {
-            jj_scope.clear();
-            root.invalidate_jj_events();
-            out.clear();
-            continue;
-        }
         if jj_mode {
             let is_dir = std::fs::symlink_metadata(abs).is_ok_and(|metadata| metadata.is_dir())
                 || matches!(event.kind, EventKind::Remove(_));
@@ -183,6 +177,15 @@ fn collect_event(
                 });
                 continue;
             }
+        }
+        // Checked after the ignored-directory collapse: a .gitignore inside
+        // an ignored directory, such as a package in node_modules, has no
+        // effect on what jj tracks.
+        if jj_mode && rel.file_name().is_some_and(|name| name == ".gitignore") {
+            jj_scope.clear();
+            root.invalidate_jj_events();
+            out.clear();
+            continue;
         }
         match event.kind {
             EventKind::Remove(_) => {

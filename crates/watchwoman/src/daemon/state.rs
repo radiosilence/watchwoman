@@ -160,6 +160,14 @@ impl DaemonState {
         // Rehydrate durable triggers from the last run and restart
         // their fork-and-exec loops so a daemon restart is invisible.
         root.load_persisted_triggers();
+        // Only jj's own trigger can run against the event index.
+        if root
+            .list_triggers()
+            .iter()
+            .any(|t| t.name != "jj-background-monitor")
+        {
+            root.promote_to_full();
+        }
         for trigger in root.list_triggers() {
             crate::commands::trigger::spawn_trigger_loop_ext(
                 root.clone(),

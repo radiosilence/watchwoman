@@ -52,32 +52,23 @@ fn jj_mode_starts_without_crawling_and_reports_later_changes() {
     let root = Value::String(scratch.path().to_string_lossy().into());
     c.call("watch-project", [root.clone()]).unwrap();
 
-    let status = c.call("status", []).unwrap();
-    let roots = status
-        .as_object()
-        .unwrap()
-        .get("roots")
-        .unwrap()
-        .as_array()
-        .unwrap();
-    assert_eq!(
-        roots[0]
-            .as_object()
-            .unwrap()
-            .get("num_files")
-            .and_then(Value::as_i64),
-        Some(0)
-    );
-    assert_eq!(
-        roots[0].as_object().unwrap().get("index_mode"),
-        Some(&Value::String("jj-events".into()))
-    );
-
+    // A crawl would have indexed these; the event index never does.
+    // Events for the other files written above may still arrive late.
+    assert_eq!(index_mode(&mut c), Value::String("jj-events".into()));
     let initial = c.call("query", [root.clone(), jj_query(None)]).unwrap();
     let initial = initial.as_object().unwrap();
     assert_eq!(initial.get("is_fresh_instance"), Some(&Value::Bool(true)));
-    assert!(initial.get("files").unwrap().as_array().unwrap().is_empty());
-    let clock = initial.get("clock").unwrap().as_str().unwrap().to_owned();
+    let names: Vec<_> = initial
+        .get("files")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(!names.contains(&"generated/old"), "{names:?}");
+    assert!(!names.contains(&".jj/marker"), "{names:?}");
+    let clock = settled_clock(&mut c, &root, &scratch);
 
     scratch.write("new.txt", b"new").unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -194,15 +185,7 @@ fn jj_mode_collapses_recursively_ignored_directories_and_reloads_rules() {
     let mut c = h.client().unwrap();
     let root = Value::String(scratch.path().to_string_lossy().into());
     c.call("watch-project", [root.clone()]).unwrap();
-    let initial = c.call("clock", [root.clone()]).unwrap();
-    let clock = initial
-        .as_object()
-        .unwrap()
-        .get("clock")
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let clock = settled_clock(&mut c, &root, &scratch);
 
     scratch.write("generated/one", b"new").unwrap();
     scratch.write("generated/two", b"new").unwrap();
@@ -282,4 +265,217 @@ fn a_general_watchman_query_promotes_a_jj_root_to_a_full_index() {
         roots[0].as_object().unwrap().get("index_mode"),
         Some(&Value::String("full".into()))
     );
+}
+
+fn clock_of(c: &mut watchwoman_tests::Client, root: &Value) -> String {
+    let response = c.call("clock", [root.clone()]).unwrap();
+    response
+        .as_object()
+        .unwrap()
+        .get("clock")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn index_mode(c: &mut watchwoman_tests::Client) -> Value {
+    let status = c.call("status", []).unwrap();
+    status
+        .as_object()
+        .unwrap()
+        .get("roots")
+        .unwrap()
+        .as_array()
+        .unwrap()[0]
+        .as_object()
+        .unwrap()
+        .get("index_mode")
+        .unwrap()
+        .clone()
+}
+
+/// Delete `name` and wait until a jj query since `clock` reports it.
+fn delete_and_wait(
+    c: &mut watchwoman_tests::Client,
+    root: &Value,
+    scratch: &Scratch,
+    name: &str,
+    clock: &str,
+) {
+    std::fs::remove_file(scratch.path().join(name)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let response = c
+            .call("query", [root.clone(), jj_query(Some(clock))])
+            .unwrap();
+        let files = response
+            .as_object()
+            .unwrap()
+            .get("files")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        if files.iter().any(|file| file.as_str() == Some(name)) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "deletion of {name} was not reported"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn promotion_answers_clocks_from_the_event_index_afresh() {
+    let h = Harness::spawn_with(TargetBinary::Watchwoman).unwrap();
+    let scratch = Scratch::new().unwrap();
+    scratch.write(".jj/marker", b"").unwrap();
+    scratch.write("tracked.txt", b"preexisting").unwrap();
+    let mut c = h.client().unwrap();
+    let root = Value::String(scratch.path().to_string_lossy().into());
+    c.call("watch-project", [root.clone()]).unwrap();
+    let clock = clock_of(&mut c, &root);
+    delete_and_wait(&mut c, &root, &scratch, "tracked.txt", &clock);
+
+    let mut spec = IndexMap::new();
+    spec.insert(
+        "fields".into(),
+        Value::Array(vec![Value::String("name".into())]),
+    );
+    c.call("query", [root.clone(), Value::Object(spec)])
+        .unwrap();
+    assert_eq!(index_mode(&mut c), Value::String("full".into()));
+
+    // The crawl cannot know about the deletion, so the old clock must not
+    // be answered as if nothing had been lost.
+    let response = c.call("query", [root, jj_query(Some(&clock))]).unwrap();
+    assert_eq!(
+        response.as_object().unwrap().get("is_fresh_instance"),
+        Some(&Value::Bool(true))
+    );
+}
+
+#[test]
+fn reloaded_general_triggers_promote_a_jj_root() {
+    let h = Harness::spawn_with(TargetBinary::Watchwoman).unwrap();
+    let scratch = Scratch::new().unwrap();
+    scratch.write(".jj/marker", b"").unwrap();
+    let mut c = h.client().unwrap();
+    let root = Value::String(scratch.path().to_string_lossy().into());
+    c.call("watch-project", [root.clone()]).unwrap();
+    let mut spec = IndexMap::new();
+    spec.insert("name".into(), Value::String("build".into()));
+    spec.insert(
+        "command".into(),
+        Value::Array(vec![Value::String("true".into())]),
+    );
+    c.call("trigger", [root.clone(), Value::Object(spec)])
+        .unwrap();
+
+    // Re-registering the root reloads its persisted triggers, as a daemon
+    // restart does.
+    c.call("watch-del", [root.clone()]).unwrap();
+    c.call("watch-project", [root]).unwrap();
+    assert_eq!(index_mode(&mut c), Value::String("full".into()));
+}
+
+#[test]
+fn tombstone_sweeps_leave_jj_clocks_answerable() {
+    let h = Harness::spawn_with(TargetBinary::Watchwoman).unwrap();
+    let scratch = Scratch::new().unwrap();
+    scratch.write(".jj/marker", b"").unwrap();
+    scratch.write("tracked.txt", b"preexisting").unwrap();
+    let mut c = h.client().unwrap();
+    let root = Value::String(scratch.path().to_string_lossy().into());
+    c.call("watch-project", [root.clone()]).unwrap();
+    let clock = clock_of(&mut c, &root);
+    delete_and_wait(&mut c, &root, &scratch, "tracked.txt", &clock);
+
+    c.call("debug-ageout", [Value::Int(0)]).unwrap();
+    let response = c.call("query", [root, jj_query(Some(&clock))]).unwrap();
+    let result = response.as_object().unwrap();
+    assert_eq!(result.get("is_fresh_instance"), Some(&Value::Bool(false)));
+    assert!(result
+        .get("files")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|file| file.as_str() == Some("tracked.txt")));
+}
+
+/// A clock after which the index has settled. Events for files written
+/// just before the watch registered can still arrive, and a late
+/// `.gitignore` among them invalidates the index. FSEvents and inotify
+/// deliver in order, so once a file written now is reported incrementally,
+/// those earlier events are in.
+fn settled_clock(c: &mut watchwoman_tests::Client, root: &Value, scratch: &Scratch) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut clock = clock_of(c, root);
+    for n in 0.. {
+        let sentinel = format!("settle-{n}");
+        scratch.write(&sentinel, b"").unwrap();
+        loop {
+            let response = c
+                .call("query", [root.clone(), jj_query(Some(&clock))])
+                .unwrap();
+            let result = response.as_object().unwrap();
+            let next = result.get("clock").unwrap().as_str().unwrap().to_owned();
+            if result.get("is_fresh_instance") == Some(&Value::Bool(true)) {
+                clock = next;
+                break;
+            }
+            let files = result.get("files").unwrap().as_array().unwrap();
+            if files
+                .iter()
+                .any(|file| file.as_str() == Some(sentinel.as_str()))
+            {
+                return next;
+            }
+            assert!(Instant::now() < deadline, "the index did not settle");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    unreachable!()
+}
+
+#[test]
+fn a_gitignore_inside_an_ignored_directory_keeps_the_index() {
+    let h = Harness::spawn_with(TargetBinary::Watchwoman).unwrap();
+    let scratch = Scratch::new().unwrap();
+    scratch.write(".jj/marker", b"").unwrap();
+    scratch.write(".gitignore", b"/node_modules/\n").unwrap();
+    let mut c = h.client().unwrap();
+    let root = Value::String(scratch.path().to_string_lossy().into());
+    c.call("watch-project", [root.clone()]).unwrap();
+    let clock = settled_clock(&mut c, &root, &scratch);
+
+    scratch
+        .write("node_modules/pkg/.gitignore", b"dist\n")
+        .unwrap();
+    scratch.write("tracked.txt", b"new").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let response = c
+            .call("query", [root.clone(), jj_query(Some(&clock))])
+            .unwrap();
+        let result = response.as_object().unwrap();
+        assert_eq!(
+            result.get("is_fresh_instance"),
+            Some(&Value::Bool(false)),
+            "a package's .gitignore invalidated the index"
+        );
+        let files = result.get("files").unwrap().as_array().unwrap();
+        let names: Vec<_> = files.iter().filter_map(Value::as_str).collect();
+        if names.contains(&"node_modules/.gitignore") && names.contains(&"tracked.txt") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "changes were not reported: {names:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }

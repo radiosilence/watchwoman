@@ -129,9 +129,9 @@ pub fn run(root: &Arc<Root>, spec: &QuerySpec) -> QueryResult {
     let mut files = Vec::new();
     let since_tick =
         cursor_since.or_else(|| spec.since.as_ref().map(|s| s.tick_against(&root.clock)));
-    let is_fresh_instance = since_tick.is_none()
-        || (root.is_jj_events()
-            && since_tick.is_some_and(|tick| tick == 0 || tick < root.oldest_available_tick()));
+    let is_fresh_instance = since_tick.is_none_or(|tick| {
+        tick < root.oldest_available_tick() || (tick == 0 && root.is_jj_events())
+    });
     let include_dirs = spec.always_include_directories;
 
     let rel_root = spec.relative_root.as_deref();
