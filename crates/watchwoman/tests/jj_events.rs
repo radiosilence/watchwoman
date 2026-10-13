@@ -295,7 +295,7 @@ fn index_mode(c: &mut watchwoman_tests::Client) -> Value {
         .clone()
 }
 
-/// Delete `name` and wait until a jj query since `clock` reports it.
+/// Delete `name` and wait until a jj query since `clock` reports it gone.
 fn delete_and_wait(
     c: &mut watchwoman_tests::Client,
     root: &Value,
@@ -304,11 +304,20 @@ fn delete_and_wait(
     clock: &str,
 ) {
     std::fs::remove_file(scratch.path().join(name)).unwrap();
+    let Value::Object(mut spec) = jj_query(Some(clock)) else {
+        unreachable!()
+    };
+    spec.insert(
+        "fields".into(),
+        Value::Array(vec![
+            Value::String("name".into()),
+            Value::String("exists".into()),
+        ]),
+    );
+    let spec = Value::Object(spec);
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let response = c
-            .call("query", [root.clone(), jj_query(Some(clock))])
-            .unwrap();
+        let response = c.call("query", [root.clone(), spec.clone()]).unwrap();
         let files = response
             .as_object()
             .unwrap()
@@ -316,7 +325,11 @@ fn delete_and_wait(
             .unwrap()
             .as_array()
             .unwrap();
-        if files.iter().any(|file| file.as_str() == Some(name)) {
+        let gone = files.iter().filter_map(Value::as_object).any(|file| {
+            file.get("name").and_then(Value::as_str) == Some(name)
+                && file.get("exists") == Some(&Value::Bool(false))
+        });
+        if gone {
             return;
         }
         assert!(
@@ -336,7 +349,7 @@ fn promotion_answers_clocks_from_the_event_index_afresh() {
     let mut c = h.client().unwrap();
     let root = Value::String(scratch.path().to_string_lossy().into());
     c.call("watch-project", [root.clone()]).unwrap();
-    let clock = clock_of(&mut c, &root);
+    let clock = settled_clock(&mut c, &root, &scratch);
     delete_and_wait(&mut c, &root, &scratch, "tracked.txt", &clock);
 
     let mut spec = IndexMap::new();
@@ -390,7 +403,7 @@ fn tombstone_sweeps_leave_jj_clocks_answerable() {
     let mut c = h.client().unwrap();
     let root = Value::String(scratch.path().to_string_lossy().into());
     c.call("watch-project", [root.clone()]).unwrap();
-    let clock = clock_of(&mut c, &root);
+    let clock = settled_clock(&mut c, &root, &scratch);
     delete_and_wait(&mut c, &root, &scratch, "tracked.txt", &clock);
 
     c.call("debug-ageout", [Value::Int(0)]).unwrap();
@@ -478,4 +491,33 @@ fn a_gitignore_inside_an_ignored_directory_keeps_the_index() {
         );
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+#[test]
+fn scm_clocks_are_not_fresh_after_promotion() {
+    let h = Harness::spawn_with(TargetBinary::Watchwoman).unwrap();
+    let scratch = Scratch::new().unwrap();
+    scratch.write(".jj/marker", b"").unwrap();
+    let mut c = h.client().unwrap();
+    let root = Value::String(scratch.path().to_string_lossy().into());
+    c.call("watch-project", [root.clone()]).unwrap();
+
+    let mut spec = IndexMap::new();
+    spec.insert(
+        "fields".into(),
+        Value::Array(vec![Value::String("name".into())]),
+    );
+    c.call("query", [root.clone(), Value::Object(spec.clone())])
+        .unwrap();
+    assert_eq!(index_mode(&mut c), Value::String("full".into()));
+
+    // A mergebase query filters by the paths git reports, not by tick, so
+    // the promotion's tick has no bearing on it.
+    spec.insert("since".into(), Value::String("scm:git:HEAD".into()));
+    spec.insert("empty_on_fresh_instance".into(), Value::Bool(true));
+    let response = c.call("query", [root, Value::Object(spec)]).unwrap();
+    assert_eq!(
+        response.as_object().unwrap().get("is_fresh_instance"),
+        Some(&Value::Bool(false))
+    );
 }
