@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use notify::event::{AccessKind, AccessMode};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 
@@ -143,14 +144,15 @@ fn collect_event(
             return;
         }
     };
-    if event.need_rescan() {
-        if root.invalidate_jj_events() {
-            jj_scope.clear();
-            out.clear();
-        }
+    if event.need_rescan() && root.invalidate_jj_events() {
+        jj_scope.clear();
+        out.clear();
         return;
     }
-    if matches!(event.kind, EventKind::Access(_)) {
+    // Opening or reading a file changes nothing; a close after writing is
+    // the one access event that marks new contents.
+    if matches!(event.kind, EventKind::Access(kind) if kind != AccessKind::Close(AccessMode::Write))
+    {
         return;
     }
     for abs in &event.paths {
