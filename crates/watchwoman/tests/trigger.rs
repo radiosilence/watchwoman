@@ -103,15 +103,17 @@ fn trigger_reaps_completed_child() {
     scratch.write("main.rs", b"fn main() {}").unwrap();
 
     let deadline = Instant::now() + Duration::from_secs(30);
-    while !marker.exists() && Instant::now() < deadline {
+    // The shell creates the file before writing to it, so wait for a PID.
+    let pid = loop {
+        let written = std::fs::read_to_string(&marker)
+            .ok()
+            .and_then(|s| s.trim().parse::<i32>().ok());
+        if let Some(pid) = written {
+            break Pid::from_raw(pid);
+        }
+        assert!(Instant::now() < deadline, "trigger did not write its PID");
         std::thread::sleep(Duration::from_millis(50));
-    }
-    let pid = std::fs::read_to_string(&marker)
-        .expect("trigger wrote its PID")
-        .trim()
-        .parse::<i32>()
-        .unwrap();
-    let pid = Pid::from_raw(pid);
+    };
 
     while kill(pid, None) != Err(Errno::ESRCH) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));

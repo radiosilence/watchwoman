@@ -210,15 +210,20 @@ fn walk(
 }
 
 fn should_ignore(rel: &std::path::Path, ignores: &WatchIgnores) -> bool {
-    let comps: Vec<_> = rel.components().collect();
-    for (i, comp) in comps.iter().enumerate() {
-        let s = comp.as_os_str().to_string_lossy();
-        if ignores.dirs.iter().any(|d| d == s.as_ref()) {
-            return true;
-        }
+    let names: Vec<_> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect();
+    if names
+        .iter()
+        .any(|s| ignores.dirs.iter().any(|d| d == s.as_ref()))
+    {
+        return true;
+    }
+    for (i, s) in names.iter().enumerate() {
         if ignores.vcs.iter().any(|d| d == s.as_ref()) {
             // Include the VCS directory and its direct children.
-            return i + 2 < comps.len();
+            return i + 2 < names.len();
         }
     }
     false
