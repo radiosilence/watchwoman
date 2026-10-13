@@ -37,7 +37,8 @@ a smoke-test against real watchman.
 - [x] `state-enter`, `state-leave`.
 - [x] `trigger`, `trigger-list`, `trigger-del` — persisted to
       `<state-dir>/roots/<root-slug>/triggers.json`, rehydrated on
-      daemon start.
+      daemon start. Each trigger runs one command at a time and waits
+      for it to exit before running again, as watchman does.
 - [x] `get-config`, `log`, `log-level`.
 - [x] `shutdown-server`.
 - [x] `debug-ageout`, `debug-recrawl`, `debug-show-cursors`.
