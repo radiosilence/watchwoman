@@ -119,6 +119,9 @@ async fn run_trigger(
             continue;
         }
 
+        // The command may run for as long as it likes; holding the root
+        // across the wait would keep a deleted watch alive until it exits.
+        drop(root);
         if let Err(e) = fire(&trigger, &root_path, &filenames).await {
             tracing::warn!(?e, trigger = %trigger.name, "trigger command failed");
         }
