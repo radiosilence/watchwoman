@@ -114,9 +114,6 @@ async fn run_trigger(
                 break;
             }
         };
-        // Read before the query so ticks buffered while a command ran are
-        // skipped rather than each re-running a query that covers them.
-        let now = root.clock.current_tick();
         let result = query::run(&root, &parsed);
         // The tick the query observed, so ticks buffered while a command ran
         // are skipped rather than each re-running a query that covers them.
