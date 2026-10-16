@@ -5,7 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-10-13
+## [0.8.0] - 2026-10-16
 
 This release is largely Nikita's work: trigger child processes are reaped, which stops a long-running daemon exhausting the process table, and jj worktrees get an event index instead of a full crawl.
 
