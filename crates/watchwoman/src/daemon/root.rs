@@ -98,17 +98,9 @@ pub struct Root {
     /// `None` means "no durability" (tests, ephemeral daemons).
     state_dir: Option<PathBuf>,
     pub ignores: WatchIgnores,
-<<<<<<< HEAD
     jj_events: AtomicBool,
     pub mode_transition: RwLock<()>,
     oldest_available_tick: AtomicU64,
-||||||| 13fdfe4
-    /// `ignore_dirs` from the root's `.watchmanconfig`.  Path
-    /// components matching any of these (exact basename) are skipped
-    /// in both the initial scan and subsequent fs events.
-    pub ignore_dirs: Vec<String>,
-=======
->>>>>>> origin/main
     root_number_pool: Arc<AtomicU64>,
     subscriptions: RwLock<HashMap<String, SubscriptionSpec>>,
     triggers: RwLock<HashMap<String, Trigger>>,
@@ -140,12 +132,7 @@ impl Root {
         watcher_cmd_tx: mpsc::UnboundedSender<WatcherCommand>,
         state_dir: Option<PathBuf>,
         ignores: WatchIgnores,
-<<<<<<< HEAD
         jj_events: bool,
-||||||| 13fdfe4
-        ignore_dirs: Vec<String>,
-=======
->>>>>>> origin/main
     ) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         let now = unix_now();
@@ -159,14 +146,9 @@ impl Root {
             watcher_cmd_tx,
             state_dir,
             ignores,
-<<<<<<< HEAD
             jj_events: AtomicBool::new(jj_events),
             mode_transition: RwLock::new(()),
             oldest_available_tick: AtomicU64::new(0),
-||||||| 13fdfe4
-            ignore_dirs,
-=======
->>>>>>> origin/main
             root_number_pool,
             subscriptions: RwLock::new(HashMap::new()),
             triggers: RwLock::new(HashMap::new()),
