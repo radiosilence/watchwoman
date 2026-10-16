@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Trigger commands are reaped.** The daemon dropped each trigger's child process without waiting for it, so every run left a zombie behind. A long-running daemon with a busy trigger, such as jj's snapshot trigger, eventually exhausted the process table and starved the machine. Each trigger now waits for its command to exit before running again, which is also what watchman does. Thanks to Nikita for the fix.
+- **`ignore_vcs` in `.watchmanconfig` is honoured.** The VCS directories that are reported but not recursed into were fixed at `.git`, `.hg` and `.svn`, so a `.jj` directory was indexed in full. The list now comes from the root's `ignore_vcs` when set, replacing the defaults as it does in watchman, and applies to the initial scan, recrawls and filesystem events alike. Thanks to Nikita for the fix.
+
 ## [0.7.2] - 2026-10-12
 
 ### Fixed

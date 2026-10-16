@@ -17,7 +17,7 @@ pub fn recrawl(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {
     // Re-seed the tree from a fresh scan of the disk. Useful when
     // something outside the kernel's event stream (e.g. a bind-mount
     // or a network fs that coalesced) has drifted from reality.
-    let entries = crate::daemon::watcher::initial_scan(&root.path, &root.ignore_dirs);
+    let entries = crate::daemon::watcher::initial_scan(&root.path, &root.ignores);
     let count = entries.len();
     root.seed(entries);
     Ok(obj([

@@ -45,6 +45,24 @@ pub enum TriggerStdin {
     JsonName,
 }
 
+#[derive(Clone)]
+pub struct WatchIgnores {
+    pub dirs: Vec<String>,
+    pub vcs: Vec<String>,
+}
+
+impl Default for WatchIgnores {
+    fn default() -> Self {
+        Self {
+            dirs: Vec::new(),
+            vcs: [".git", ".hg", ".svn"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        }
+    }
+}
+
 impl Trigger {
     /// Build the watchman-style query spec this trigger should run on
     /// every tick. `since_clock` fences the query so the trigger only
@@ -79,10 +97,7 @@ pub struct Root {
     /// Directory the daemon persists per-root state into (triggers).
     /// `None` means "no durability" (tests, ephemeral daemons).
     state_dir: Option<PathBuf>,
-    /// `ignore_dirs` from the root's `.watchmanconfig`.  Path
-    /// components matching any of these (exact basename) are skipped
-    /// in both the initial scan and subsequent fs events.
-    pub ignore_dirs: Vec<String>,
+    pub ignores: WatchIgnores,
     root_number_pool: Arc<AtomicU64>,
     subscriptions: RwLock<HashMap<String, SubscriptionSpec>>,
     triggers: RwLock<HashMap<String, Trigger>>,
@@ -110,7 +125,7 @@ impl Root {
         root_number_pool: Arc<AtomicU64>,
         watcher_cmd_tx: mpsc::UnboundedSender<WatcherCommand>,
         state_dir: Option<PathBuf>,
-        ignore_dirs: Vec<String>,
+        ignores: WatchIgnores,
     ) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         let now = unix_now();
@@ -123,7 +138,7 @@ impl Root {
             tick_tx: tx,
             watcher_cmd_tx,
             state_dir,
-            ignore_dirs,
+            ignores,
             root_number_pool,
             subscriptions: RwLock::new(HashMap::new()),
             triggers: RwLock::new(HashMap::new()),

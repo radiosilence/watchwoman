@@ -1,6 +1,9 @@
 use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;
+use nix::errno::Errno;
+use nix::sys::signal::kill;
+use nix::unistd::Pid;
 use watchwoman_protocol::Value;
 use watchwoman_tests::{Harness, Scratch};
 
@@ -66,6 +69,60 @@ fn trigger_fires_on_change() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(fired, "trigger did not execute; marker not created");
+}
+
+#[test]
+fn trigger_reaps_completed_child() {
+    let h = Harness::spawn().expect("spawn daemon");
+    let scratch = Scratch::new().unwrap();
+    let mut c = h.client().unwrap();
+
+    let root = Value::String(scratch.path().to_string_lossy().into());
+    c.call("watch-project", [root.clone()]).unwrap();
+
+    let marker = scratch.path().join("trigger.pid");
+    let spec = obj(&[
+        ("name", Value::String("record-pid".into())),
+        (
+            "command",
+            Value::Array(vec![
+                Value::String("/bin/sh".into()),
+                Value::String("-c".into()),
+                Value::String(format!("echo $$ > {}", marker.display())),
+            ]),
+        ),
+        (
+            "expression",
+            Value::Array(vec![
+                Value::String("suffix".into()),
+                Value::String("rs".into()),
+            ]),
+        ),
+    ]);
+    c.call("trigger", [root, spec]).unwrap();
+    scratch.write("main.rs", b"fn main() {}").unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    // The shell creates the file before writing to it, so wait for a PID.
+    let pid = loop {
+        let written = std::fs::read_to_string(&marker)
+            .ok()
+            .and_then(|s| s.trim().parse::<i32>().ok());
+        if let Some(pid) = written {
+            break Pid::from_raw(pid);
+        }
+        assert!(Instant::now() < deadline, "trigger did not write its PID");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    while kill(pid, None) != Err(Errno::ESRCH) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        kill(pid, None),
+        Err(Errno::ESRCH),
+        "trigger child was not reaped"
+    );
 }
 
 #[test]

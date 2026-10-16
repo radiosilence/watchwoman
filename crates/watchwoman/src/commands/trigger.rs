@@ -13,10 +13,11 @@
 //! triggers can reinstall them on startup.
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
 
 use indexmap::IndexMap;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
 use watchwoman_protocol::Value;
 
 use super::{obj, CommandError, CommandResult};
@@ -110,15 +111,21 @@ async fn run_trigger(
                 break;
             }
         };
+        // Read before the query so ticks buffered while a command ran are
+        // skipped rather than each re-running a query that covers them.
+        let now = root.clock.current_tick();
         let result = query::run(&root, &parsed);
-        last_tick = ev.tick;
+        last_tick = now.max(ev.tick);
 
         let filenames = collect_names(&result.files);
         if filenames.is_empty() {
             continue;
         }
 
-        if let Err(e) = fire(&trigger, &root_path, &filenames) {
+        // The command may run for as long as it likes; holding the root
+        // across the wait would keep a deleted watch alive until it exits.
+        drop(root);
+        if let Err(e) = fire(&trigger, &root_path, &filenames).await {
             tracing::warn!(?e, trigger = %trigger.name, "trigger command failed");
         }
     }
@@ -139,7 +146,7 @@ fn collect_names(files: &[Value]) -> Vec<String> {
     out
 }
 
-fn fire(trigger: &Trigger, root: &PathBuf, filenames: &[String]) -> std::io::Result<()> {
+async fn fire(trigger: &Trigger, root: &PathBuf, filenames: &[String]) -> std::io::Result<()> {
     if trigger.command.is_empty() {
         return Ok(());
     }
@@ -172,12 +179,12 @@ fn fire(trigger: &Trigger, root: &PathBuf, filenames: &[String]) -> std::io::Res
         .spawn()?;
 
     if let Some(mut stdin_pipe) = child.stdin.take() {
-        use std::io::Write as _;
         let cap = trigger.max_files_stdin.unwrap_or(filenames.len());
         match trigger.stdin {
             Some(TriggerStdin::NamePerLine) => {
                 for name in filenames.iter().take(cap) {
-                    let _ = writeln!(stdin_pipe, "{name}");
+                    let _ = stdin_pipe.write_all(name.as_bytes()).await;
+                    let _ = stdin_pipe.write_all(b"\n").await;
                 }
             }
             Some(TriggerStdin::JsonName) => {
@@ -186,14 +193,14 @@ fn fire(trigger: &Trigger, root: &PathBuf, filenames: &[String]) -> std::io::Res
                     .take(cap)
                     .map(|n| serde_json::json!({ "name": n }))
                     .collect();
-                let _ = serde_json::to_writer(&mut stdin_pipe, &rows);
+                let mut bytes = Vec::new();
+                let _ = serde_json::to_writer(&mut bytes, &rows);
+                let _ = stdin_pipe.write_all(&bytes).await;
             }
             None => {}
         }
     }
-    // Fire-and-forget by default — watchman's triggers run
-    // detached. Dropping the Child sets SIGCHLD cleanup to the OS.
-    std::mem::drop(child);
+    child.wait().await?;
     Ok(())
 }
 
