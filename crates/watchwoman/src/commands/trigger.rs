@@ -114,10 +114,19 @@ async fn run_trigger(
                 break;
             }
         };
+        // Read before the query so ticks buffered while a command ran are
+        // skipped rather than each re-running a query that covers them.
+        let now = root.clock.current_tick();
         let result = query::run(&root, &parsed);
+<<<<<<< HEAD
         // The tick the query observed, so ticks buffered while a command ran
         // are skipped rather than each re-running a query that covers them.
         last_tick = crate::daemon::clock::ClockSpec::parse(&result.clock).tick_against(&root.clock);
+||||||| 13fdfe4
+        last_tick = ev.tick;
+=======
+        last_tick = now.max(ev.tick);
+>>>>>>> origin/main
 
         let filenames = collect_names(&result.files);
         if filenames.is_empty() && !(root.is_jj_events() && result.is_fresh_instance) {
