@@ -5,6 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-16
+
+This release is largely Nikita's work: trigger child processes are reaped, which stops a long-running daemon exhausting the process table, and jj worktrees get an event index instead of a full crawl.
+
 ### Added
 
 - **jj worktrees get an event index instead of a full crawl.** A root containing `.jj` starts with an index of only the paths that change, discovering nested `.gitignore` files along those paths. Changes inside an ignored directory collapse into one rescan signal for that directory, so jj checks its tracked files there against its own working-copy state. A `.gitignore` edit, lost events or an exhausted index make the next query ask jj for a fresh scan. If another client issues a general query, subscription or trigger in the same root, the root is promoted to a full index for everyone. `status` reports which mode each root uses. Thanks to Nikita for the feature.
