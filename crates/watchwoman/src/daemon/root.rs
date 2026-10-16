@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -98,6 +98,9 @@ pub struct Root {
     /// `None` means "no durability" (tests, ephemeral daemons).
     state_dir: Option<PathBuf>,
     pub ignores: WatchIgnores,
+    jj_events: AtomicBool,
+    pub mode_transition: RwLock<()>,
+    oldest_available_tick: AtomicU64,
     root_number_pool: Arc<AtomicU64>,
     subscriptions: RwLock<HashMap<String, SubscriptionSpec>>,
     triggers: RwLock<HashMap<String, Trigger>>,
@@ -118,6 +121,9 @@ pub enum WatcherCommand {
     Shutdown,
 }
 
+const JJ_EVENT_INDEX_MAX_ENTRIES: usize = 65_536;
+const JJ_EVENT_INDEX_MAX_ARENA_BYTES: usize = 64 * 1024 * 1024;
+
 impl Root {
     pub fn new(
         path: PathBuf,
@@ -126,6 +132,7 @@ impl Root {
         watcher_cmd_tx: mpsc::UnboundedSender<WatcherCommand>,
         state_dir: Option<PathBuf>,
         ignores: WatchIgnores,
+        jj_events: bool,
     ) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         let now = unix_now();
@@ -139,6 +146,9 @@ impl Root {
             watcher_cmd_tx,
             state_dir,
             ignores,
+            jj_events: AtomicBool::new(jj_events),
+            mode_transition: RwLock::new(()),
+            oldest_available_tick: AtomicU64::new(0),
             root_number_pool,
             subscriptions: RwLock::new(HashMap::new()),
             triggers: RwLock::new(HashMap::new()),
@@ -192,6 +202,36 @@ impl Root {
         self.triggers.read().len()
     }
 
+    pub fn is_jj_events(&self) -> bool {
+        self.jj_events.load(Ordering::Acquire)
+    }
+
+    pub fn promote_to_full(&self) {
+        let _transition = self.mode_transition.write();
+        if !self.is_jj_events() {
+            return;
+        }
+        let mut tree = self.tree.write();
+        let entries = super::watcher::initial_scan(&self.path, &self.ignores);
+        let tick = self.clock.bump();
+        let mut fresh = Tree::with_capacity(entries.len());
+        for (rel, metadata, symlink_target) in entries {
+            fresh.upsert(
+                &rel,
+                &metadata,
+                symlink_target.as_deref(),
+                tick,
+                false,
+                tick,
+            );
+        }
+        *tree = fresh;
+        // Deletions recorded by the event index are gone with it, so a
+        // clock from before the crawl can only be answered afresh.
+        self.oldest_available_tick.store(tick, Ordering::Release);
+        self.jj_events.store(false, Ordering::Release);
+    }
+
     /// Prune tombstones that no outstanding cursor still needs.
     /// Watermark is `min(current_tick, min(cursor_ticks))`; tombstones
     /// whose `oclock` is at or below the watermark are dropped.
@@ -199,12 +239,38 @@ impl Root {
     /// `TickEvent` broadcast, not by re-reading the tree.  Returns
     /// `(watermark, removed)` so callers can log what happened.
     pub fn prune_tombstones(&self) -> (u64, usize) {
+        // jj holds plain clocks rather than named cursors, so the watermark
+        // would be the current tick and every sweep would force jj into a
+        // full scan. The event index is bounded by its own caps instead.
+        if self.is_jj_events() {
+            return (self.clock.current_tick(), 0);
+        }
         let mut watermark = self.clock.current_tick();
         for &t in self.cursors.read().values() {
             watermark = watermark.min(t);
         }
         let removed = self.tree.write().prune_tombstones_before(watermark);
         (watermark, removed)
+    }
+
+    pub fn oldest_available_tick(&self) -> u64 {
+        self.oldest_available_tick.load(Ordering::Acquire)
+    }
+
+    pub fn invalidate_jj_events(&self) -> bool {
+        let mut tree = self.tree.write();
+        if !self.is_jj_events() {
+            return false;
+        }
+        let tick = self.clock.bump();
+        *tree = Tree::new();
+        self.oldest_available_tick.store(tick, Ordering::Release);
+        drop(tree);
+        let _ = self.tick_tx.send(TickEvent {
+            tick,
+            changed: Vec::new(),
+        });
+        true
     }
 
     /// Return the tick a named cursor points at, or 0 if it's new.
@@ -313,8 +379,15 @@ impl Root {
     /// Apply a batch of path changes to the tree and bump the clock once.
     /// Returns the tick that covers this batch.
     pub fn apply_changes(&self, changes: Vec<PathChange>) -> u64 {
-        let tick = self.clock.bump();
         let mut tree = self.tree.write();
+        let tick = self.clock.bump();
+        if self.is_jj_events()
+            && (tree.len() >= JJ_EVENT_INDEX_MAX_ENTRIES
+                || tree.arena_bytes() >= JJ_EVENT_INDEX_MAX_ARENA_BYTES)
+        {
+            *tree = Tree::new();
+            self.oldest_available_tick.store(tick, Ordering::Release);
+        }
         let mut changed_paths = Vec::with_capacity(changes.len());
         for change in changes {
             match change {
@@ -343,7 +416,15 @@ impl Root {
                     changed_paths.push(rel);
                 }
                 PathChange::Remove { rel } => {
-                    tree.mark_gone(&rel, tick);
+                    if self.is_jj_events() {
+                        tree.record_gone(&rel, tick);
+                    } else {
+                        tree.mark_gone(&rel, tick);
+                    }
+                    changed_paths.push(rel);
+                }
+                PathChange::Signal { rel } => {
+                    tree.record_signal(&rel, tick);
                     changed_paths.push(rel);
                 }
             }
@@ -366,6 +447,7 @@ impl Root {
     /// instead of growing geometrically through 22 reallocations on
     /// a 5 M-file scan.
     pub fn seed(&self, entries: Vec<(PathBuf, std::fs::Metadata, Option<String>)>) -> u64 {
+        let mut tree = self.tree.write();
         let tick = self.clock.bump();
         let mut fresh = Tree::with_capacity(entries.len());
         for (rel, metadata, symlink_target) in entries {
@@ -378,7 +460,7 @@ impl Root {
                 tick,
             );
         }
-        *self.tree.write() = fresh;
+        *tree = fresh;
         tick
     }
 
@@ -418,6 +500,9 @@ pub enum PathChange {
         symlink_target: Option<String>,
     },
     Remove {
+        rel: PathBuf,
+    },
+    Signal {
         rel: PathBuf,
     },
 }

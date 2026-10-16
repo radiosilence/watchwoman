@@ -14,6 +14,13 @@ use crate::daemon::state::DaemonState;
 
 pub fn recrawl(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {
     let root = resolve_root(state, args)?;
+    if root.invalidate_jj_events() {
+        return Ok(obj([
+            ("recrawled", Value::Bool(true)),
+            ("root", Value::String(root.path.to_string_lossy().into())),
+            ("files", Value::Int(0)),
+        ]));
+    }
     // Re-seed the tree from a fresh scan of the disk. Useful when
     // something outside the kernel's event stream (e.g. a bind-mount
     // or a network fs that coalesced) has drifted from reality.
@@ -25,6 +32,14 @@ pub fn recrawl(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {
         ("root", Value::String(root.path.to_string_lossy().into())),
         ("files", Value::Int(count as i64)),
     ]))
+}
+
+pub fn inject_drop(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {
+    let root = resolve_root(state, args)?;
+    Ok(obj([(
+        "injected",
+        Value::Bool(root.invalidate_jj_events()),
+    )]))
 }
 
 pub fn ageout(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {

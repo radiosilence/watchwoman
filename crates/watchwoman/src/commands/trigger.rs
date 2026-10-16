@@ -28,6 +28,9 @@ use crate::query;
 pub fn trigger(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {
     let (root_path, root, spec) = parse_trigger_spec(state, args)?;
     let parsed = parse_trigger(&spec)?;
+    if parsed.name != "jj-background-monitor" {
+        root.promote_to_full();
+    }
     let name = parsed.name.clone();
     root.install_trigger(parsed.clone());
     spawn_trigger_loop(root.clone(), root_path, parsed);
@@ -52,7 +55,7 @@ pub fn trigger_del(state: &Arc<DaemonState>, args: &[Value]) -> CommandResult {
         .ok_or_else(|| CommandError::BadArgs("trigger-del requires a name".into()))?;
     let removed = root.remove_trigger(name);
     Ok(obj([
-        ("deleted", Value::Int(if removed { 1 } else { 0 })),
+        ("deleted", Value::Bool(removed)),
         ("trigger", Value::String(name.to_owned())),
     ]))
 }
@@ -111,14 +114,13 @@ async fn run_trigger(
                 break;
             }
         };
-        // Read before the query so ticks buffered while a command ran are
-        // skipped rather than each re-running a query that covers them.
-        let now = root.clock.current_tick();
         let result = query::run(&root, &parsed);
-        last_tick = now.max(ev.tick);
+        // The tick the query observed, so ticks buffered while a command ran
+        // are skipped rather than each re-running a query that covers them.
+        last_tick = crate::daemon::clock::ClockSpec::parse(&result.clock).tick_against(&root.clock);
 
         let filenames = collect_names(&result.files);
-        if filenames.is_empty() {
+        if filenames.is_empty() && !(root.is_jj_events() && result.is_fresh_instance) {
             continue;
         }
 

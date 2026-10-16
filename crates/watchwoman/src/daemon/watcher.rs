@@ -10,9 +10,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use notify::event::{AccessKind, AccessMode};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 
+use super::jj_scope::JjScope;
 use super::root::{PathChange, Root, WatchIgnores, WatcherCommand};
 
 const SETTLE: Duration = Duration::from_millis(5);
@@ -26,7 +28,10 @@ const MAX_BATCH: usize = 1024;
 /// the root — and its entire file tree arena — alive for the life of
 /// the daemon, waiting for a shutdown that can't be sent until it lets
 /// go.  Every root watched would leak its full index.
-pub fn spawn(root: &Arc<Root>, mut cmd_rx: mpsc::UnboundedReceiver<WatcherCommand>) {
+pub fn spawn(
+    root: &Arc<Root>,
+    mut cmd_rx: mpsc::UnboundedReceiver<WatcherCommand>,
+) -> anyhow::Result<()> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<notify::Result<Event>>();
 
     let root_path = root.path.clone();
@@ -37,7 +42,7 @@ pub fn spawn(root: &Arc<Root>, mut cmd_rx: mpsc::UnboundedReceiver<WatcherComman
     // before the watch was attached and the event would be silently
     // dropped.  Saw it as a 10–15 % flake on the trigger integration
     // test before this barrier went in.
-    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<()>(0);
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(0);
     // Shutdown path for the blocking thread below.  `JoinHandle::abort`
     // is useless here: a `spawn_blocking` task that has already started
     // never observes cancellation, so aborting left the thread parked
@@ -51,12 +56,14 @@ pub fn spawn(root: &Arc<Root>, mut cmd_rx: mpsc::UnboundedReceiver<WatcherComman
             Ok(w) => w,
             Err(e) => {
                 tracing::warn!(?e, "failed to create watcher");
-                drop(ready_tx);
+                let _ = ready_tx.send(Err(e.to_string()));
                 return;
             }
         };
         if let Err(e) = watcher.watch(&root_path, RecursiveMode::Recursive) {
             tracing::warn!(?e, "failed to watch root");
+            let _ = ready_tx.send(Err(e.to_string()));
+            return;
         }
         // Signal ready *after* `watch()` returns: at this point
         // inotify/fsevents has the kernel registration in place, so
@@ -65,7 +72,7 @@ pub fn spawn(root: &Arc<Root>, mut cmd_rx: mpsc::UnboundedReceiver<WatcherComman
         // unblocks the caller too — they'll proceed without a working
         // watcher, the warn above being the only signal, which
         // matches the previous behaviour.
-        let _ = ready_tx.send(());
+        let _ = ready_tx.send(Ok(()));
         // Hold the watcher alive until the event loop is done with it.
         // Returning from here drops `watcher`, which is what actually
         // unregisters the kernel-side watch.
@@ -74,10 +81,11 @@ pub fn spawn(root: &Arc<Root>, mut cmd_rx: mpsc::UnboundedReceiver<WatcherComman
     // Block until the watcher is registered.  The blocking task above
     // runs on tokio's blocking-thread pool, so this doesn't deadlock
     // the runtime even when called from an async handler.
-    let _ = ready_rx.recv();
+    ready_rx.recv()?.map_err(anyhow::Error::msg)?;
 
     let root_for_events = Arc::downgrade(root);
     tokio::spawn(async move {
+        let mut jj_scope = JjScope::default();
         loop {
             tokio::select! {
                 biased;
@@ -89,16 +97,21 @@ pub fn spawn(root: &Arc<Root>, mut cmd_rx: mpsc::UnboundedReceiver<WatcherComman
                     // Unregistered between the event firing and us
                     // waking up — nothing left to apply it to.
                     let Some(root) = root_for_events.upgrade() else { break };
-                    let mut batch = Vec::with_capacity(8);
-                    collect_event(&root, first, &mut batch);
+                    let mut events = vec![first];
                     let deadline = tokio::time::Instant::now() + SETTLE;
-                    while batch.len() < MAX_BATCH {
+                    while events.len() < MAX_BATCH {
                         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                         if remaining.is_zero() { break; }
                         match tokio::time::timeout(remaining, event_rx.recv()).await {
-                            Ok(Some(next)) => collect_event(&root, next, &mut batch),
+                            Ok(Some(next)) => events.push(next),
                             Ok(None) | Err(_) => break,
                         }
+                    }
+                    let _mode_guard = root.mode_transition.read();
+                    let jj_mode = root.is_jj_events();
+                    let mut batch = Vec::with_capacity(events.len());
+                    for event in events {
+                        collect_event(&root, event, &mut batch, &mut jj_scope, jj_mode);
                     }
                     if !batch.is_empty() {
                         root.apply_changes(batch);
@@ -110,16 +123,38 @@ pub fn spawn(root: &Arc<Root>, mut cmd_rx: mpsc::UnboundedReceiver<WatcherComman
         // with it.
         drop(stop_tx);
     });
+    Ok(())
 }
 
-fn collect_event(root: &Root, event: notify::Result<Event>, out: &mut Vec<PathChange>) {
+fn collect_event(
+    root: &Root,
+    event: notify::Result<Event>,
+    out: &mut Vec<PathChange>,
+    jj_scope: &mut JjScope,
+    jj_mode: bool,
+) {
     let event = match event {
         Ok(ev) => ev,
         Err(e) => {
             tracing::debug!(?e, "notify error");
+            if root.invalidate_jj_events() {
+                jj_scope.clear();
+                out.clear();
+            }
             return;
         }
     };
+    if event.need_rescan() && root.invalidate_jj_events() {
+        jj_scope.clear();
+        out.clear();
+        return;
+    }
+    // Opening or reading a file changes nothing; a close after writing is
+    // the one access event that marks new contents.
+    if matches!(event.kind, EventKind::Access(kind) if kind != AccessKind::Close(AccessMode::Write))
+    {
+        return;
+    }
     for abs in &event.paths {
         let Some(rel) = abs.strip_prefix(&root.path).ok().map(PathBuf::from) else {
             continue;
@@ -127,7 +162,29 @@ fn collect_event(root: &Root, event: notify::Result<Event>, out: &mut Vec<PathCh
         if rel.as_os_str().is_empty() {
             continue;
         }
-        if should_ignore(&rel, &root.ignores) {
+        if (jj_mode && is_jj_internal(&rel)) || (!jj_mode && should_ignore(&rel, &root.ignores)) {
+            continue;
+        }
+        if jj_mode {
+            let is_dir = std::fs::symlink_metadata(abs).is_ok_and(|metadata| metadata.is_dir())
+                || matches!(event.kind, EventKind::Remove(_));
+            if let Some(ignored) = jj_scope.ignored_directory(&root.path, &rel, is_dir) {
+                if ignored == rel && matches!(event.kind, EventKind::Remove(_)) {
+                    out.push(PathChange::Remove { rel: rel.clone() });
+                }
+                out.push(PathChange::Signal {
+                    rel: ignored.join(".gitignore"),
+                });
+                continue;
+            }
+        }
+        // Checked after the ignored-directory collapse: a .gitignore inside
+        // an ignored directory, such as a package in node_modules, has no
+        // effect on what jj tracks.
+        if jj_mode && rel.file_name().is_some_and(|name| name == ".gitignore") {
+            jj_scope.clear();
+            root.invalidate_jj_events();
+            out.clear();
             continue;
         }
         match event.kind {
@@ -155,6 +212,12 @@ fn collect_event(root: &Root, event: notify::Result<Event>, out: &mut Vec<PathCh
             }
         }
     }
+}
+
+fn is_jj_internal(rel: &Path) -> bool {
+    rel.components()
+        .next()
+        .is_some_and(|component| component.as_os_str() == ".git" || component.as_os_str() == ".jj")
 }
 
 pub(crate) fn initial_scan(
@@ -229,16 +292,28 @@ fn should_ignore(rel: &std::path::Path, ignores: &WatchIgnores) -> bool {
     false
 }
 
-pub(crate) fn load_watchman_config_ignores(root: &std::path::Path) -> WatchIgnores {
+pub(crate) struct WatchConfig {
+    pub ignores: WatchIgnores,
+    pub jj_events: bool,
+}
+
+pub(crate) fn load_watchman_config(root: &std::path::Path) -> WatchConfig {
+    let jj_events = root.join(".jj").is_dir();
     let path = root.join(".watchmanconfig");
     let Ok(bytes) = std::fs::read(&path) else {
-        return WatchIgnores::default();
+        return WatchConfig {
+            ignores: WatchIgnores::default(),
+            jj_events,
+        };
     };
     let parsed: serde_json::Value = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(?e, path = ?path, "ignoring malformed .watchmanconfig");
-            return WatchIgnores::default();
+            return WatchConfig {
+                ignores: WatchIgnores::default(),
+                jj_events,
+            };
         }
     };
     let mut ignores = WatchIgnores::default();
@@ -254,5 +329,5 @@ pub(crate) fn load_watchman_config_ignores(root: &std::path::Path) -> WatchIgnor
             .filter_map(|v| v.as_str().map(str::to_owned))
             .collect();
     }
-    ignores
+    WatchConfig { ignores, jj_events }
 }

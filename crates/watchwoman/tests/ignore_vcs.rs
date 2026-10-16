@@ -9,9 +9,9 @@ fn configured_vcs_directories_are_watched_shallowly() {
     let h = Harness::spawn().expect("spawn daemon");
     let scratch = Scratch::new().unwrap();
     scratch
-        .write(".watchmanconfig", br#"{"ignore_vcs":[".jj"]}"#)
+        .write(".watchmanconfig", br#"{"ignore_vcs":[".custom-vcs"]}"#)
         .unwrap();
-    scratch.write(".jj/repo/store/hidden", b"").unwrap();
+    scratch.write(".custom-vcs/repo/store/hidden", b"").unwrap();
     scratch.write(".git/objects/visible", b"").unwrap();
 
     let mut c = h.client().unwrap();
@@ -40,11 +40,11 @@ fn configured_vcs_directories_are_watched_shallowly() {
     };
 
     let initial = names();
-    assert!(initial.iter().any(|name| name == ".jj/repo"));
-    assert!(!initial.iter().any(|name| name == ".jj/repo/store"));
+    assert!(initial.iter().any(|name| name == ".custom-vcs/repo"));
+    assert!(!initial.iter().any(|name| name == ".custom-vcs/repo/store"));
     assert!(initial.iter().any(|name| name == ".git/objects/visible"));
 
-    scratch.write(".jj/repo/late", b"").unwrap();
+    scratch.write(".custom-vcs/repo/late", b"").unwrap();
     scratch.write("visible.txt", b"").unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut observed = names();
@@ -57,5 +57,5 @@ fn configured_vcs_directories_are_watched_shallowly() {
     // to arrive before asserting it was ignored.
     std::thread::sleep(Duration::from_millis(200));
     observed = names();
-    assert!(!observed.iter().any(|name| name == ".jj/repo/late"));
+    assert!(!observed.iter().any(|name| name == ".custom-vcs/repo/late"));
 }

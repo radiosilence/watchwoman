@@ -78,6 +78,28 @@ impl FileKind {
 }
 
 impl<'a> FileEntry<'a> {
+    fn missing(clock_tick: u64) -> Self {
+        Self {
+            exists: false,
+            kind: FileKind::Unknown,
+            size: 0,
+            mode: 0,
+            uid: 0,
+            gid: 0,
+            mtime_ns: 0,
+            ctime_ns: 0,
+            mtime_ms: 0,
+            ctime_ms: 0,
+            ino: 0,
+            dev: 0,
+            nlink: 0,
+            symlink_target: None,
+            cclock: clock_tick,
+            oclock: clock_tick,
+            is_new: false,
+        }
+    }
+
     pub fn from_metadata(md: &Metadata, symlink_target: Option<&'a str>, clock_tick: u64) -> Self {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
@@ -356,6 +378,39 @@ impl Tree {
         e.exists = false;
         e.oclock = tick;
         e.is_new = false;
+    }
+
+    /// Event-only indexes have no initial entry for a preexisting path.
+    /// Preserve its deletion so a since-query still tells jj to inspect it.
+    pub fn record_gone(&mut self, rel: &Path, tick: u64) {
+        if self.entries.contains_key(rel) {
+            self.mark_gone(rel, tick);
+        } else {
+            let key = self.intern_path(rel);
+            self.entries.insert(key, FileEntry::missing(tick));
+            self.tombstones += 1;
+        }
+    }
+
+    /// A jj-only directory signal. The path is consumed as a name by jj;
+    /// its synthetic metadata is never used to decide what is tracked.
+    pub fn record_signal(&mut self, rel: &Path, tick: u64) {
+        let (key, cclock, was_live, was_tombstone) = match self.entries.get_key_value(rel) {
+            Some((key, entry)) => (*key, entry.cclock, entry.exists, !entry.exists),
+            None => (self.intern_path(rel), tick, false, false),
+        };
+        let mut entry = FileEntry::missing(tick);
+        entry.exists = true;
+        entry.kind = FileKind::File;
+        entry.cclock = cclock;
+        entry.is_new = cclock == tick;
+        self.entries.insert(key, entry);
+        if !was_live {
+            self.live += 1;
+            if was_tombstone {
+                self.tombstones = self.tombstones.saturating_sub(1);
+            }
+        }
     }
 
     /// Drop tombstones whose `oclock` is at or below `watermark` —
