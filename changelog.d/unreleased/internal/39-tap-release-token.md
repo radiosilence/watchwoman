@@ -1,0 +1,1 @@
+- **The Homebrew tap is updated with `RELEASE_TOKEN`.** One token now covers the release and the tap, as in koan and sift, in place of a separate `HOMEBREW_TAP_TOKEN`.
