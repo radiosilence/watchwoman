@@ -386,7 +386,7 @@ jobs:
           files: release/*
 
   # After the release, so the formula never names a tarball that does not
-  # exist. Skips without HOMEBREW_TAP_TOKEN, the token that can push to the tap.
+  # exist. Skips without RELEASE_TOKEN, which pushes to the tap as it does for koan and sift.
   homebrew:
     name: Update Homebrew Tap
     needs: [version, release]
@@ -395,10 +395,10 @@ jobs:
       - name: Check tap token
         id: gate
         env:
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           if [ -z "$TAP_TOKEN" ]; then
-            echo "HOMEBREW_TAP_TOKEN not set; skipping tap update." \
+            echo "RELEASE_TOKEN not set; skipping tap update." \
               >> "$GITHUB_STEP_SUMMARY"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
@@ -408,7 +408,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: radiosilence/homebrew-watchwoman
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          token: ${{ secrets.RELEASE_TOKEN }}
           path: tap
 
       - name: Download CI artifacts
