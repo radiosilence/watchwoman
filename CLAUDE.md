@@ -14,7 +14,7 @@ A drop-in, wire-compatible replacement for Facebook watchman: the same JSON and 
 
 ## Releasing
 
-`just release patch|minor|major` (or an exact `X.Y.Z`) branches from main, bumps the workspace version, the `watchwoman-protocol` pin and `Cargo.lock`, turns the unreleased fragments into the version and opens the release PR; the Release workflow does the same from GitHub. Merging it is the release: CI publishes both crates to crates.io, then the GitHub release with the six platform tarballs and the changelog section as notes, then the Homebrew formula in `radiosilence/homebrew-watchwoman`. A push releases only when it changes the version; `gh workflow run ci.yml` on main retries a release that failed part way.
+`just release patch|minor|major` (or an exact `X.Y.Z`) branches from main, bumps the workspace version, the `watchwoman-protocol` pin and `Cargo.lock`, turns the unreleased fragments into the version and opens the release PR; the Release workflow does the same from GitHub. Merging it is the release: CI publishes both crates to crates.io, then the GitHub release with the five platform tarballs and the changelog section as notes, then the Homebrew formula in `radiosilence/homebrew-watchwoman`. A push releases only when it changes the version; `gh workflow run ci.yml` on main retries a release that failed part way.
 
 ## Check
 

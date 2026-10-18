@@ -122,10 +122,6 @@ jobs:
       - name: Check against the declared MSRV
         run: cargo check --workspace --all-targets
 
-  # Release artifacts are built on every PR and every push to main —
-  # not only when the version bumps.  A musl / linux-arm break on a
-  # feature PR now fails CI instead of surfacing after a release.
-  # The release jobs below publish these artifacts; nothing is rebuilt.
   # CHANGELOG.md is generated from changelog.d/ (scripts/changelog.py). A pull
   # request adds fragments without regenerating it, so only its fragments and
   # the released versions are checked; one that writes CHANGELOG.md, as a
@@ -187,6 +183,42 @@ jobs:
             exit 1
           fi
 
+  # Whether a pull request touches anything Linux cannot check for macOS: the
+  # FSEvents watcher and the daemon around it, jemalloc, the macOS-only CLI
+  # and capability code, the integration tests that drive the watcher, the
+  # manifests, lockfile and toolchain, and CI itself. A changed Rust file
+  # holding `target_os = "macos"` counts too, so new Apple-only code is
+  # caught without editing this list.
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    outputs:
+      macos: ${{ steps.diff.outputs.macos }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - id: diff
+        run: |
+          # HEAD is the pull request merged into its base, so HEAD^1 is the base.
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          echo "$changed"
+          macos=false
+          if echo "$changed" | grep -qE '^(\.github/workflows/|crates/watchwoman/src/(daemon/|cli\.rs$|lib\.rs$|commands/(info|watch|debug)\.rs$)|crates/watchwoman/tests/|crates/watchwoman-tests/|(.*/)?Cargo\.(toml|lock)$|(.*/)?build\.rs$|mise\.toml$|rust-toolchain|scripts/package\.sh$)'; then
+            macos=true
+          fi
+          for f in $(echo "$changed" | grep '\.rs$'); do
+            if [ -f "$f" ] && grep -q 'target_os = "macos"' "$f"; then
+              macos=true
+            fi
+          done
+          echo "macos=${macos}" | tee -a "$GITHUB_OUTPUT"
+
+  # Release artifacts are built on every pull request and every push to main,
+  # not only when the version bumps, so a musl or linux-arm break fails the
+  # pull request instead of the release. The release jobs below publish these
+  # artifacts; nothing is rebuilt. macOS has its own job, below.
   build:
     name: Build ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
@@ -199,12 +231,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS — both slices built on the arm64 runner.
-          # macos-13 (Intel) has a chronic queue backlog on GitHub's
-          # free tier; cross-compiling from arm64 keeps the pipeline
-          # unblocked and all SDKs are universal anyway.
-          - { os: macos-latest, target: aarch64-apple-darwin, platform: macos-arm64 }
-          - { os: macos-latest, target: x86_64-apple-darwin,  platform: macos-amd64 }
           # Linux (glibc) — dynamic
           - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  platform: linux-amd64-gnu  }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, platform: linux-arm64-gnu  }
@@ -234,64 +260,16 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: ${{ matrix.target }}
-          # Restoring a stale ~/.cargo/bin/ over the freshly installed
-          # rustup proxy leaves `cargo` pointing at a half-bootstrapped
-          # rustup-init shim on the macOS arm64 runners — every
-          # `cargo build` then errors with "unexpected argument 'build'
-          # found / Usage: rustup-init[EXE]".  The registry/target/git
-          # caches still restore; only ~/.cargo/bin/ is skipped.
-          cache-bin: "false"
-          # Six targets, so six full release target/ trees — by far the largest
-          # thing this repository puts in its 10GB cache budget, and a branch's
-          # copy is unreadable from every branch but its own.
+          # Four targets, so four full release target/ trees — by far the
+          # largest thing this repository puts in its 10GB cache budget, and a
+          # branch's copy is unreadable from every branch but its own.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Read workspace version
-        id: ver
-        shell: bash
-        run: |
-          VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} --bins -p watchwoman
 
-      # Developer ID signed and notarised, so the tarball runs from a browser
-      # download without clearing quarantine. Pull requests stay ad-hoc signed.
-      - name: Sign and notarise (macOS)
-        if: runner.os == 'macOS' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'schedule'
-        uses: radiosilence/blit-workflows/macos-notarise@c8a650dfa5a0fbe012c61eab28f615c1983aee18
-        with:
-          binaries: |
-            target/${{ matrix.target }}/release/watchwoman
-            target/${{ matrix.target }}/release/watchman
-            target/${{ matrix.target }}/release/watchman-wait
-            target/${{ matrix.target }}/release/watchman-make
-            target/${{ matrix.target }}/release/watchman-diag
-            target/${{ matrix.target }}/release/watchmanctl
-          certificate-p12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
-          certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          api-key-p8: ${{ secrets.APPLE_API_KEY_P8 }}
-          api-key-id: ${{ secrets.APPLE_API_KEY_ID }}
-          api-issuer-id: ${{ secrets.APPLE_API_ISSUER_ID }}
       - name: Package
-        id: package
-        shell: bash
-        run: |
-          VERSION="${{ steps.ver.outputs.version }}"
-          NAME="watchwoman-${VERSION}-${{ matrix.target }}"
-          mkdir -p "dist/${NAME}"
-          # Ship every binary target built by the watchwoman crate:
-          # watchwoman + watchman alias + watchman-wait + watchman-make
-          # + watchman-diag + watchmanctl.
-          for bin in watchwoman watchman watchman-wait watchman-make watchman-diag watchmanctl; do
-            cp "target/${{ matrix.target }}/release/${bin}" "dist/${NAME}/"
-          done
-          cp README.md CHANGELOG.md LICENSE* "dist/${NAME}/" 2>/dev/null || true
-          tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
-          (cd dist && shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
-          echo "artifact=dist/${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "checksum=dist/${NAME}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+        run: scripts/package.sh ${{ matrix.target }}
 
       - name: Upload tarball
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -299,9 +277,91 @@ jobs:
           # Name is stable across runs and contains only the platform
           # — CD globs `watchwoman-*` to gather them all.
           name: watchwoman-${{ matrix.platform }}
-          path: |
-            ${{ steps.package.outputs.artifact }}
-            ${{ steps.package.outputs.checksum }}
+          path: dist/*.tar.gz*
+          retention-days: 30
+
+  # The account's few macOS runners are shared by every repository, so macOS
+  # takes one job: clippy, the tests and the release build in sequence over
+  # one target directory and one cache. A pull request takes the runner only
+  # when `changes` finds something Linux cannot check, and a push to main only
+  # when it releases, since its pull request has already run the checks. Only a
+  # release signs, packages and uploads the tarball, in this same job. Intel
+  # macOS is not built.
+  macos:
+    name: macOS
+    needs: [changes, version]
+    if: >-
+      !cancelled() && !failure() &&
+      (needs.changes.outputs.macos == 'true' || needs.version.outputs.should_release == 'true')
+    runs-on: macos-latest
+    env:
+      TARGET: aarch64-apple-darwin
+      RELEASE: ${{ needs.version.outputs.should_release == 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: macos
+          # Restoring a stale ~/.cargo/bin/ over the freshly installed
+          # rustup proxy leaves `cargo` pointing at a half-bootstrapped
+          # rustup-init shim on the macOS arm64 runners — every
+          # `cargo build` then errors with "unexpected argument 'build'
+          # found / Usage: rustup-init[EXE]".  The registry/target/git
+          # caches still restore; only ~/.cargo/bin/ is skipped.
+          cache-bin: "false"
+          # Main runs this job only to release, so the cache pull requests
+          # restore from is refreshed once per release.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Lint with Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --all-features
+
+      - name: Build
+        run: cargo build --release --target "$TARGET" --bins -p watchwoman
+
+      # Developer ID signed and notarised, so the tarball runs from a browser
+      # download without clearing quarantine.
+      - name: Sign and notarise
+        if: env.RELEASE == 'true'
+        uses: radiosilence/blit-workflows/macos-notarise@c8a650dfa5a0fbe012c61eab28f615c1983aee18
+        with:
+          binaries: |
+            target/aarch64-apple-darwin/release/watchwoman
+            target/aarch64-apple-darwin/release/watchman
+            target/aarch64-apple-darwin/release/watchman-wait
+            target/aarch64-apple-darwin/release/watchman-make
+            target/aarch64-apple-darwin/release/watchman-diag
+            target/aarch64-apple-darwin/release/watchmanctl
+          certificate-p12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          api-key-p8: ${{ secrets.APPLE_API_KEY_P8 }}
+          api-key-id: ${{ secrets.APPLE_API_KEY_ID }}
+          api-issuer-id: ${{ secrets.APPLE_API_ISSUER_ID }}
+
+      - name: Package
+        if: env.RELEASE == 'true'
+        run: scripts/package.sh "$TARGET"
+
+      - name: Upload tarball
+        if: env.RELEASE == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: watchwoman-macos-arm64
+          path: dist/*.tar.gz*
           retention-days: 30
 
   # Before the GitHub release: a version on crates.io cannot be taken back, so
@@ -313,7 +373,7 @@ jobs:
   # commit.
   crates:
     name: Publish to crates.io
-    needs: [test, lint, format, msrv, changelog, version, build]
+    needs: [test, lint, format, msrv, changelog, version, build, macos]
     if: needs.version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -370,10 +430,10 @@ jobs:
           find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) \
             -exec cp {} release/ \;
           ls -la release/
-          # Six platforms, each a tarball and its sha256.
+          # Five platforms, each a tarball and its sha256.
           count=$(find release -type f | wc -l | tr -d ' ')
-          if [ "$count" -lt 12 ]; then
-            echo "expected >=12 release files, got $count; aborting" >&2
+          if [ "$count" -lt 10 ]; then
+            echo "expected >=10 release files, got $count; aborting" >&2
             exit 1
           fi
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -441,7 +501,6 @@ jobs:
           }
           # Target tarball naming matches ci.yml build.Package.NAME.
           MACOS_ARM_SHA=$(must "watchwoman-${VERSION}-aarch64-apple-darwin.tar.gz")
-          MACOS_AMD_SHA=$(must "watchwoman-${VERSION}-x86_64-apple-darwin.tar.gz")
           LINUX_ARM_SHA=$(must "watchwoman-${VERSION}-aarch64-unknown-linux-gnu.tar.gz")
           LINUX_AMD_SHA=$(must "watchwoman-${VERSION}-x86_64-unknown-linux-gnu.tar.gz")
 
@@ -455,13 +514,9 @@ jobs:
             license any_of: ["MIT", "Apache-2.0"]
 
             on_macos do
-              if Hardware::CPU.arm?
-                url "${URL_BASE}/watchwoman-${VERSION}-aarch64-apple-darwin.tar.gz"
-                sha256 "${MACOS_ARM_SHA}"
-              else
-                url "${URL_BASE}/watchwoman-${VERSION}-x86_64-apple-darwin.tar.gz"
-                sha256 "${MACOS_AMD_SHA}"
-              end
+              depends_on arch: :arm64
+              url "${URL_BASE}/watchwoman-${VERSION}-aarch64-apple-darwin.tar.gz"
+              sha256 "${MACOS_ARM_SHA}"
             end
 
             on_linux do
