@@ -1343,7 +1343,7 @@ dependencies = [
 
 [[package]]
 name = "watchwoman"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "allocator-api2 0.4.0",
  "anyhow",
@@ -1378,7 +1378,7 @@ dependencies = [
 
 [[package]]
 name = "watchwoman-protocol"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "bytes",
  "indexmap",
@@ -1390,7 +1390,7 @@ dependencies = [
 
 [[package]]
 name = "watchwoman-tests"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "indexmap",
