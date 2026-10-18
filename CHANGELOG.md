@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.8.1
 
 ### Internal
 
 - **Releases are cut by a release pull request.** `just release` or the Release workflow bumps the version and opens the PR, and merging it publishes the crates, the GitHub release and the Homebrew formula from the CI run that built and tested the commit. The changelog is generated from fragments in `changelog.d/`, so pull requests no longer conflict in it, and a release's notes are its changelog section.
+- **The Homebrew tap is updated with `RELEASE_TOKEN`.** One token now covers the release and the tap, as in koan and sift, in place of a separate `HOMEBREW_TAP_TOKEN`.
 
 ## 0.8.0
 
