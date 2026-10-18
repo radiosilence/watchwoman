@@ -1,0 +1,1 @@
+- **The pre-push hook only checks formatting.** Clippy no longer runs before every push; CI runs it on every pull request, so a push is not held up running it locally.
