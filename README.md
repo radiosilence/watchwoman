@@ -107,7 +107,8 @@ watchwoman completion fish > ~/.config/fish/completions/watchwoman.fish
 
 ## Platforms
 
-Linux and macOS, amd64 and arm64 (glibc and musl on Linux).
+Linux (amd64 and arm64, glibc and musl) and macOS on Apple silicon.
+Intel Macs are not built for; `cargo install watchwoman` builds there.
 
 Windows is intentionally out of scope — the daemon is built on unix
 sockets and `setsid`, and the watcher backend is FSEvents / inotify /

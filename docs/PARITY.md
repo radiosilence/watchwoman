@@ -104,7 +104,7 @@ a smoke-test against real watchman.
 
 ## Platforms
 
-- [x] macOS (arm64, amd64).
+- [x] macOS (arm64; Intel builds from source only).
 - [x] Linux (arm64, amd64; glibc and musl).
 - [ ] Windows — intentionally out of scope.  The daemon relies on
       unix sockets, `setsid`, and FSEvents/inotify; a proper Windows
