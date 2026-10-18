@@ -1,11 +1,12 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-Format follows [Keep a Changelog](https://keepachangelog.com/).
+## Unreleased
 
-## [Unreleased]
+### Internal
 
-## [0.8.0] - 2026-10-16
+- **Releases are cut by a release pull request.** `just release` or the Release workflow bumps the version and opens the PR, and merging it publishes the crates, the GitHub release and the Homebrew formula from the CI run that built and tested the commit. The changelog is generated from fragments in `changelog.d/`, so pull requests no longer conflict in it, and a release's notes are its changelog section.
+
+## 0.8.0
 
 This release is largely Nikita's work: trigger child processes are reaped, which stops a long-running daemon exhausting the process table, and jj worktrees get an event index instead of a full crawl.
 
@@ -19,19 +20,19 @@ This release is largely Nikita's work: trigger child processes are reaped, which
 - **`ignore_vcs` in `.watchmanconfig` is honoured.** The VCS directories that are reported but not recursed into were fixed at `.git`, `.hg` and `.svn`, so a `.jj` directory was indexed in full. The list now comes from the root's `ignore_vcs` when set, replacing the defaults as it does in watchman, and applies to the initial scan, recrawls and filesystem events alike. Thanks to Nikita for the fix.
 - **`trigger-del` returns a boolean `deleted`**, as watchman does and the watchman client jj uses requires. Thanks to Nikita for the fix.
 
-## [0.7.2] - 2026-10-12
+## 0.7.2
 
 ### Fixed
 
 - **The CLI honours `--output-encoding=bser-v2` (and `bser`/`bser2`).** Watchman clients such as jj discover the daemon socket by running `get-sockname` with `--output-encoding=bser-v2`; the CLI rejected that spelling and the other BSER values still printed JSON, so discovery failed. `bser-v2` is accepted as an alias and stdout now uses the protocol codec for commands, stdin PDUs, errors, status and persistent responses. Thanks to Nikita for the fix.
 
-## [0.7.1] - 2026-09-29
+## 0.7.1
 
 ### Changed
 
 - **macOS release binaries are signed with a Developer ID and notarised.** Downloaded through a browser, the ad-hoc signed binaries were quarantined and Gatekeeper refused to run them until the quarantine attribute was cleared.
 
-## [0.7.0] - 2026-08-04
+## 0.7.0
 
 0.6.0 claimed memory tracked the daemon's live working set.  It did
 not.  Every root ever watched leaked its whole file index, and the two
@@ -128,7 +129,7 @@ of RSS, and allocator live-versus-mapped.
   the `wit-bindgen` / `wasm-encoder` / `wasmparser` WASI toolchain,
   which was never reachable from a build targeting unix.
 
-## [0.6.0] - 2026-05-01
+## 0.6.0
 
 The headline is structural memory reclaim: per-root file index moves
 from a globally-allocated `BTreeMap` to a per-root bumpalo arena.
@@ -167,7 +168,7 @@ through arbitrary watch churn.
   daemon just hadn't been populating it.  Output now reads
   `watchwoman 0.6.0  (pid …, up …)` instead of a blank slot.
 
-## [0.5.2] - 2026-04-30
+## 0.5.2
 
 ### Fixed
 
@@ -234,7 +235,7 @@ through arbitrary watch churn.
 - Follow-up: arena-per-root is tracked in #13 — the larger
   architectural change for guaranteed reclaim under fragmentation.
 
-## [0.5.1] - 2026-04-24
+## 0.5.1
 
 ### Added
 
@@ -268,7 +269,7 @@ through arbitrary watch churn.
   Per-crate hits survive across test / lint / build jobs that
   previously recompiled the same tokio / futures graph three times.
 
-## [0.5.0] - 2026-04-22
+## 0.5.0
 
 ### Added
 
@@ -291,7 +292,7 @@ through arbitrary watch churn.
   throw away a watch you cared about, and they surface in
   `watchman status` for post-mortem.
 
-## [0.4.1] - 2026-04-18
+## 0.4.1
 
 ### Fixed
 
@@ -304,7 +305,7 @@ through arbitrary watch churn.
   a warning if all stable locations are missing.  Re-run
   `watchwoman install-agent` to regenerate a plist with the new path.
 
-## [0.4.0] - 2026-04-18
+## 0.4.0
 
 Parity polish: every CLI flag and command in upstream watchman's
 help output is now accepted by watchwoman.  47 commands and ~15
@@ -344,7 +345,7 @@ End-to-end tested 49 subcommand + flag scenarios against a live
 daemon; each returns a shape-compatible JSON object.  Parity with
 watchman 2026.03.30.00 for everything a real tool uses.
 
-## [0.3.1] - 2026-04-18
+## 0.3.1
 
 ### Added
 
@@ -353,7 +354,7 @@ watchman 2026.03.30.00 for everything a real tool uses.
   and bootstraps it with `launchctl`, so the daemon auto-starts at
   login and restarts on crash.  Not run automatically; opt in.
 
-## [0.3.0] - 2026-04-18
+## 0.3.0
 
 Battle-test release: parity against real watchman 2026.03.30.00
 verified on Vite / Next / Expo projects + a 10k-file stress tree.
@@ -410,7 +411,7 @@ projects (Vite / Next / Expo) and a 10 k-file stress directory:
 | RSS after 3 roots          |   9.6 MB   |  26.5 MB  | 2.8×    |
 | RSS after 10 k stress      |  16.1 MB   |  29.1 MB  | 1.8×    |
 
-## [0.2.2] - 2026-04-18
+## 0.2.2
 
 ### Fixed
 
@@ -436,7 +437,7 @@ projects (Vite / Next / Expo) and a 10 k-file stress directory:
 - CLI subcommands: `debug-recrawl`, `debug-ageout`, `debug-show-cursors`,
   `debug-poll-for-settle` (were accessible only via `-j` before).
 
-## [0.2.1] - 2026-04-18
+## 0.2.1
 
 ### Fixed
 
@@ -447,7 +448,7 @@ projects (Vite / Next / Expo) and a 10 k-file stress directory:
 - Homebrew formula regeneration installs all four binaries (was
   hard-coded to two).
 
-## [0.2.0] - 2026-04-18
+## 0.2.0
 
 Parity push. Every item in `docs/PARITY.md` either ticks now or has
 an explicit "intentionally out of scope" note.
@@ -483,7 +484,7 @@ an explicit "intentionally out of scope" note.
   event batching runs at 5 ms, so the watchman semantics of "wait
   until the kernel drains" is effectively always true.
 
-## [0.1.2] - 2026-04-18
+## 0.1.2
 
 ### Added
 
@@ -501,7 +502,7 @@ an explicit "intentionally out of scope" note.
 - `watchman` with no args prints help and exits 1 instead of clap's
   default error. Matches upstream behaviour.
 
-## [0.1.1] - 2026-04-18
+## 0.1.1
 
 ### Added
 
@@ -516,7 +517,7 @@ an explicit "intentionally out of scope" note.
   the same toolchain it resolves (musl target was missing against
   a 1.94 pin overridden on a stable host).
 
-## [0.1.0] - initial scaffold
+## 0.1.0
 
 ### Added
 
