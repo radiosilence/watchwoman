@@ -1,0 +1,1 @@
+- **The macOS CI job checks a release before it merges.** A release pull request builds and packages the macOS tarball, unsigned, so a packaging break shows before the version merges; ordinary pull requests run clippy and the tests only, each reported whether or not the other passes, and the release on main no longer repeats them.

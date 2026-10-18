@@ -188,13 +188,16 @@ jobs:
   # and capability code, the integration tests that drive the watcher, the
   # manifests, lockfile and toolchain, and CI itself. A changed Rust file
   # holding `target_os = "macos"` counts too, so new Apple-only code is
-  # caught without editing this list.
+  # caught without editing this list. A release pull request (one that changes
+  # the workspace version) always counts, so packaging is checked before the
+  # version merges.
   changes:
     name: Changes
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     outputs:
       macos: ${{ steps.diff.outputs.macos }}
+      release: ${{ steps.diff.outputs.release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -213,7 +216,14 @@ jobs:
               macos=true
             fi
           done
+          version_of() { sed -n 's/^version = "\(.*\)"/\1/p' | head -1; }
+          release=false
+          if [ "$(git show HEAD:Cargo.toml | version_of)" != "$(git show HEAD^1:Cargo.toml | version_of)" ]; then
+            release=true
+            macos=true
+          fi
           echo "macos=${macos}" | tee -a "$GITHUB_OUTPUT"
+          echo "release=${release}" | tee -a "$GITHUB_OUTPUT"
 
   # Release artifacts are built on every pull request and every push to main,
   # not only when the version bumps, so a musl or linux-arm break fails the
@@ -281,12 +291,14 @@ jobs:
           retention-days: 30
 
   # The account's few macOS runners are shared by every repository, so macOS
-  # takes one job: clippy, the tests and the release build in sequence over
-  # one target directory and one cache. A pull request takes the runner only
-  # when `changes` finds something Linux cannot check, and a push to main only
-  # when it releases, since its pull request has already run the checks. Only a
-  # release signs, packages and uploads the tarball, in this same job. Intel
-  # macOS is not built.
+  # takes one job over one target directory and one cache. A pull request
+  # takes the runner only when `changes` finds something Linux cannot check,
+  # and runs clippy and the tests, each regardless of the other's result. A
+  # release pull request also builds and packages the release, unsigned, so a
+  # packaging break shows before the version merges. A push to main takes the
+  # runner only to release, without repeating the checks its pull request ran:
+  # it builds, signs and notarises, packages and uploads in this one job.
+  # Intel macOS is not built.
   macos:
     name: macOS
     needs: [changes, version]
@@ -296,6 +308,8 @@ jobs:
     runs-on: macos-latest
     env:
       TARGET: aarch64-apple-darwin
+      CHECK: ${{ github.event_name == 'pull_request' }}
+      PACKAGE: ${{ needs.changes.outputs.release == 'true' || needs.version.outputs.should_release == 'true' }}
       RELEASE: ${{ needs.version.outputs.should_release == 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -320,21 +334,27 @@ jobs:
           # found / Usage: rustup-init[EXE]".  The registry/target/git
           # caches still restore; only ~/.cargo/bin/ is skipped.
           cache-bin: "false"
-          # Main runs this job only to release, so the cache pull requests
-          # restore from is refreshed once per release.
+          # Saved only by release runs on main, which build the release
+          # profile alone: pull requests restore the dependency sources from
+          # it but compile clippy and the tests cold, apart from sccache hits
+          # within the same pull request.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Lint with Clippy
+        if: ${{ !cancelled() && env.CHECK == 'true' }}
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Run tests
+        if: ${{ !cancelled() && env.CHECK == 'true' }}
         run: cargo test --workspace --all-features
 
       - name: Build
+        if: ${{ !cancelled() && env.PACKAGE == 'true' }}
         run: cargo build --release --target "$TARGET" --bins -p watchwoman
 
       # Developer ID signed and notarised, so the tarball runs from a browser
-      # download without clearing quarantine.
+      # download without clearing quarantine. The action fails when a signing
+      # secret is missing, so a release never ships an unsigned binary.
       - name: Sign and notarise
         if: env.RELEASE == 'true'
         uses: radiosilence/blit-workflows/macos-notarise@c8a650dfa5a0fbe012c61eab28f615c1983aee18
@@ -353,7 +373,7 @@ jobs:
           api-issuer-id: ${{ secrets.APPLE_API_ISSUER_ID }}
 
       - name: Package
-        if: env.RELEASE == 'true'
+        if: ${{ !cancelled() && env.PACKAGE == 'true' }}
         run: scripts/package.sh "$TARGET"
 
       - name: Upload tarball
