@@ -117,21 +117,21 @@ jobs:
           fi
           # Whether this run releases, the one answer every release job reads.
           # Only on main: a manual run on a branch releases nothing. A pull
-          # request: a release PR (branch `release-*`, or a version change),
-          # which runs everything. A push: the version differs from the
-          # diff's base and that version is not out yet; comparing with the
-          # latest release alone would let a push landing while a release runs
-          # release it again. A manual run, which is how a failed release is
+          # request: a release PR (branch `release-v*`, or a version change),
+          # which runs everything. A push: it changes the version (against
+          # its parent, not the diff's base, so a push landing while a release
+          # runs does not release it again) and that version is not out yet.
+          # A push whose release failed is retried by a manual run. A manual run, which is how a failed release is
           # retried: whatever version is not out yet. Only a 404 means not
           # out; any other answer fails this job rather than guess.
           version=$(version_of < Cargo.toml)
           bumped=false
-          if [ "$(git show "${base:-HEAD^1}:Cargo.toml" 2>/dev/null | version_of)" != "$version" ]; then
+          if [ "$(git show HEAD^1:Cargo.toml 2>/dev/null | version_of)" != "$version" ]; then
             bumped=true
           fi
           case "$EVENT" in
             pull_request)
-              case "$HEAD_REF" in release-*) bumped=true ;; esac
+              case "$HEAD_REF" in release-v*) bumped=true ;; esac
               release=$bumped
               ;;
             *)
@@ -166,11 +166,15 @@ jobs:
           elif [ "$EVENT" != "workflow_dispatch" ] && [ -n "$base" ] && files=$(git diff --name-only "$base" HEAD); then
             echo "changes since $(git rev-parse --short "$base"):"
             printf '%s\n' "$files" | sed 's/^/  /'
-            # Cargo.lock is shared by every platform; it counts for the
-            # scarce runners only when the change reaches a package they
-            # alone compile. Unanswerable, it counts.
-            reach=$(python3 .github/scripts/lock_reach.py "$base" HEAD) || reach=$'macos=true\narm=true'
-            eval "$(printf '%s\n' "$reach" | sed 's/^/lock_/')"
+            # Cargo.lock is shared by every platform; on a pull request it
+            # counts for the scarce runners only when the change reaches a
+            # package they alone compile. Unanswerable, it counts. A push
+            # runs every platform for any Rust change, so it does not ask.
+            lock_macos=false lock_arm=false
+            if [ "$EVENT" = "pull_request" ]; then
+              reach=$(python3 .github/scripts/lock_reach.py "$base" HEAD) || reach=$'macos=true\narm=true'
+              eval "$(printf '%s\n' "$reach" | sed 's/^/lock_/')"
+            fi
 
             touches '^crates/|^Cargo\.(toml|lock)$|^\.cargo/|^rust-toolchain|^scripts/package\.sh$|^\.github/' || rust=false
             touches '^scripts/package\.sh$|^\.github/' || package=false
@@ -206,11 +210,22 @@ jobs:
             fi
           fi
           # A release builds every platform. A release pull request runs every
-          # check; the release itself does not repeat them on macOS, where
-          # `macos-release` builds instead.
+          # check. The release push skips the macOS checks only when its
+          # diff is the release commit alone, which its pull request checked;
+          # commits merged since the last passing run, whose own runs it may
+          # have cancelled, still get them. A manual run retries a release of
+          # a commit already checked.
           if [ "$release" = true ]; then
             rust=true arm=true package=true
-            if [ "$EVENT" = "pull_request" ]; then macos=true; else macos=false; fi
+            case "$EVENT" in
+              pull_request) macos=true ;;
+              push)
+                if [ -n "$base" ] && [ "$(git rev-parse "$base")" = "$(git rev-parse HEAD^1)" ]; then
+                  macos=false
+                fi
+                ;;
+              *) macos=false ;;
+            esac
           fi
           {
             echo "rust=$rust"
@@ -232,6 +247,9 @@ jobs:
     name: Make room for the release
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # The release build waits on this job, so its failure, a timeout
+    # included, must not hold the release up.
+    continue-on-error: true
     needs: changes
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.changes.outputs.release == 'true'
     permissions:
@@ -249,7 +267,7 @@ jobs:
             gh run list --repo "$GITHUB_REPOSITORY" --workflow ci-cd.yml --status "$status" --limit 100 \
               --json databaseId,event,headBranch,headSha,displayTitle \
               --jq '.[] | select(.event == "pull_request" or (.event == "push" and .headBranch == "main" and (.displayTitle | startswith("release: ") | not))) | "\(.databaseId) \(.event) \(.headSha)"' \
-              || echo "::warning::could not list $status runs"
+              || echo "::warning::could not list $status runs" >&2
           done | sort -u | while read -r id event sha; do
             [ "$id" = "$SELF" ] && continue
             if [ "$event" = push ]; then
@@ -517,7 +535,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 60
     needs: [changes, make-room]
-    if: ${{ !cancelled() && needs.make-room.result == 'success' && needs.changes.outputs.release == 'true' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (needs.make-room.result == 'success' || needs.make-room.result == 'skipped') && needs.changes.outputs.release == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
     env:
       TARGET: aarch64-apple-darwin
     steps:
@@ -562,9 +580,6 @@ jobs:
     timeout-minutes: 5
     needs: [changes, checks]
     if: ${{ !cancelled() && needs.checks.result == 'success' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.changes.outputs.release == 'true' }}
-    outputs:
-      should_release: ${{ needs.changes.outputs.release }}
-      version: ${{ needs.changes.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # watchwoman depends on the protocol crate by path and by version, and
@@ -589,8 +604,8 @@ jobs:
     name: Publish to crates.io
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [check-version, build, build-arm, macos-release]
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') && needs.check-version.outputs.should_release == 'true' }}
+    needs: [changes, check-version, build, build-arm, macos-release]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') && needs.check-version.result == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
@@ -599,7 +614,7 @@ jobs:
       - name: Publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
-          VERSION: ${{ needs.check-version.outputs.version }}
+          VERSION: ${{ needs.changes.outputs.version }}
         run: |
           if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
             echo "::notice::CARGO_TOKEN is not set; skipping the crates.io publish"
@@ -619,15 +634,15 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [check-version, build, build-arm, macos-release, crates]
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') && needs.check-version.outputs.should_release == 'true' }}
+    needs: [changes, check-version, build, build-arm, macos-release, crates]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') && needs.check-version.result == 'success' }}
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Release notes
         env:
-          VERSION: ${{ needs.check-version.outputs.version }}
+          VERSION: ${{ needs.changes.outputs.version }}
         run: |
           awk -v h="## $VERSION" '$0==h{f=1;next} f&&/^## /{exit} f' CHANGELOG.md > notes.md
           if ! grep -q . notes.md; then
@@ -653,9 +668,9 @@ jobs:
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           token: ${{ secrets.RELEASE_TOKEN }}
-          tag_name: v${{ needs.check-version.outputs.version }}
+          tag_name: v${{ needs.changes.outputs.version }}
           target_commitish: ${{ github.sha }}
-          name: v${{ needs.check-version.outputs.version }}
+          name: v${{ needs.changes.outputs.version }}
           body_path: notes.md
           files: release/*
 
@@ -665,7 +680,7 @@ jobs:
     name: Update Homebrew Tap
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [check-version, release]
+    needs: [changes, release]
     if: ${{ !cancelled() && needs.release.result == 'success' }}
     steps:
       - name: Check tap token
@@ -696,7 +711,7 @@ jobs:
       - name: Collect sha256s and regenerate formula
         if: steps.gate.outputs.skip != 'true'
         env:
-          VERSION: ${{ needs.check-version.outputs.version }}
+          VERSION: ${{ needs.changes.outputs.version }}
         run: |
           set -euo pipefail
           declare -A SHAS
@@ -774,7 +789,7 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         working-directory: tap
         env:
-          VERSION: ${{ needs.check-version.outputs.version }}
+          VERSION: ${{ needs.changes.outputs.version }}
         run: |
           set -euo pipefail
           if git diff --quiet Formula/watchwoman.rb; then

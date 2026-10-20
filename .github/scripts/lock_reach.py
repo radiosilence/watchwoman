@@ -8,7 +8,8 @@ x86_64, and main, which runs every platform for any Rust change, catches what
 breaks on one platform alone. This prints `macos=true|false` and
 `arm=true|false` for the change between two commits.
 
-The platform closures come from `cargo metadata --filter-platform`, taken at
+Packages are compared by name and version, since a lock can hold two
+versions of one crate on different platforms. The platform closures come from `cargo metadata --filter-platform`, taken at
 both commits so a package added or removed counts too. Any failure exits
 non-zero, and the caller then treats the change as reaching everything.
 
@@ -38,8 +39,8 @@ def changed_packages(old, new):
         return {(p["name"], p["version"]): p for p in tomllib.loads(text).get("package", [])} if text else {}
 
     before, after = packages(old), packages(new)
-    changed = {k[0] for k in before.keys() ^ after.keys()}
-    changed |= {k[0] for k in before.keys() & after.keys() if before[k] != after[k]}
+    changed = before.keys() ^ after.keys()
+    changed |= {k for k in before.keys() & after.keys() if before[k] != after[k]}
     return changed
 
 
@@ -52,8 +53,8 @@ def closure(tree, target):
         check=True,
     )
     meta = json.loads(out.stdout)
-    names = {p["id"]: p["name"] for p in meta["packages"]}
-    return {names[n["id"]] for n in meta["resolve"]["nodes"]}
+    keys = {p["id"]: (p["name"], p["version"]) for p in meta["packages"]}
+    return {keys[n["id"]] for n in meta["resolve"]["nodes"]}
 
 
 def only_on(tree):
