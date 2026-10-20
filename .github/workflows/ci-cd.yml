@@ -1,0 +1,766 @@
+name: CI/CD
+
+# Two halves in one run, so the second ships what the first built.
+#
+# CI checks the change and ends in `Checks`, the one status the ruleset
+# requires. Each job runs only for the domains the change touches (see
+# `changes`); a skipped job passes `Checks`, a failed or cancelled one fails
+# it. Jobs can therefore be added, renamed or skipped without touching branch
+# protection.
+#
+# CD runs on main after `Checks` has passed, and only for a push that changes
+# the version, or a manual run, which releases whatever version is not out
+# yet: crates.io, then the GitHub release with the tarballs CI built, then
+# the Homebrew formula. The signed macOS build, which CI has no use for,
+# starts alongside the checks; nothing is published until both have passed.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# A pull request's newer push cancels its older run; on main, a newer push
+# cancels an older one that releases nothing. A run that may release is in a
+# group of its own and is never cancelled, and nor is a manual run, which is
+# how a failed release is retried. The group is chosen before any job runs, so
+# it cannot ask `changes`: a push may release when its head commit is titled
+# `release: ` (as `just release` names its pull request) or changes
+# `Cargo.toml`, which catches a version bump merged under any other title at
+# the cost of also keeping a dependency change from being cancelled.
+concurrency:
+  group: "ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || (startsWith(github.event.head_commit.message, 'release: ') || contains(github.event.head_commit.modified, 'Cargo.toml')) && format('release-{0}', github.sha) || 'main' }}"
+  cancel-in-progress: "${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'release: ') && !contains(github.event.head_commit.modified, 'Cargo.toml')) }}"
+
+jobs:
+  # ── CI ──────────────────────────────────────────────────────────────────
+
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      arm: ${{ steps.filter.outputs.arm }}
+      macos: ${{ steps.filter.outputs.macos }}
+      package: ${{ steps.filter.outputs.package }}
+      release: ${{ steps.filter.outputs.release }}
+      version: ${{ steps.filter.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        # The domains a change touches, from its diff. A pull request's is
+        # against its base. A push's is against the last commit on main whose
+        # run passed, so a push whose run was cancelled by the next one still
+        # gets its checks; without one in recent history, the commit before.
+        # A manual run, or a diff that cannot be worked out, runs everything.
+        #
+        # Allowlists, so the question is "did any source of this domain
+        # change?" rather than "was everything recognisably irrelevant?". A new
+        # top-level directory of code is invisible here until it is added
+        # below. Markdown is documentation wherever it sits. The justfile and
+        # mise.toml are in no domain: CI installs its toolchains with
+        # rust-toolchain actions and runs cargo directly.
+        #
+        # Domains:
+        #   rust     anything cargo compiles or that decides how; the x86_64
+        #            Linux jobs.
+        #   arm      what the arm64 Linux builds see that x86_64 does not.
+        #   macos    what the macOS runner sees that Linux does not.
+        #   package  how the release tarballs are assembled.
+        #
+        # Steps run under `bash -e`, where grep finding nothing is a failing
+        # command rather than an answer, so every question is asked in a
+        # condition.
+        run: |
+          rust=true arm=true macos=true package=true release=false
+          version_of() { sed -n 's/^version = "\(.*\)"/\1/p' | head -1; }
+          # A pull request merged or closed as its run was created: the
+          # cancelling workflow can look before this run is listed, and the
+          # run would otherwise hold runners for a change that is already in.
+          # Unanswered, it counts as open.
+          state=OPEN
+          if [ "$EVENT" = "pull_request" ]; then
+            state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json state --jq .state 2>/dev/null || echo OPEN)
+          fi
+          base=HEAD^1
+          if [ "$EVENT" = "push" ]; then
+            passed=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci-cd.yml --branch main --event push \
+              --status success --limit 1 --json headSha --jq '.[0].headSha' 2>/dev/null || true)
+            if [ -n "$passed" ] && [ "$passed" != "$(git rev-parse HEAD)" ] && git fetch -q --deepen=100 origin main && git merge-base --is-ancestor "$passed" HEAD; then
+              base=$passed
+            fi
+          fi
+          # Whether this run releases, the one answer every release job reads.
+          # A pull request: a release PR (branch `release-*`, or a version
+          # change), which runs everything. A push: it changes the version
+          # and that version is not out yet; comparing with the latest release
+          # alone would let a push landing while a release runs release it
+          # again. A manual run, which is how a failed release is retried:
+          # whatever version is not out yet.
+          version=$(version_of < Cargo.toml)
+          bumped=false
+          if [ "$(git show HEAD^1:Cargo.toml 2>/dev/null | version_of)" != "$version" ]; then
+            bumped=true
+          fi
+          case "$EVENT" in
+            pull_request)
+              case "$HEAD_REF" in release-*) bumped=true ;; esac
+              release=$bumped
+              ;;
+            *)
+              if { [ "$EVENT" = workflow_dispatch ] || [ "$bumped" = true ]; } \
+                && ! gh release view "v$version" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+                release=true
+              fi
+              ;;
+          esac
+          touches() { printf '%s\n' "$files" | grep -E "$1" | grep -qvE '\.md$'; }
+          # Changed files of the given extensions that mention a pattern.
+          mentions() {
+            printf '%s\n' "$files" | grep -E "\.($1)\$" | while read -r f; do
+              if [ -f "$f" ] && grep -qE "$2" "$f"; then echo "$f"; fi
+            done | grep -q .
+          }
+          if [ "$state" != "OPEN" ]; then
+            echo "pull request #$PR is no longer open -- skipping everything"
+            rust=false arm=false macos=false package=false release=false
+          elif [ "$EVENT" != "workflow_dispatch" ] && files=$(git diff --name-only "$base" HEAD); then
+            echo "changes since $(git rev-parse --short "$base"):"
+            printf '%s\n' "$files" | sed 's/^/  /'
+            # Cargo.lock is shared by every platform; it counts for the
+            # scarce runners only when the change reaches a package they
+            # alone compile. Unanswerable, it counts.
+            reach=$(python3 .github/scripts/lock_reach.py "$base" HEAD) || reach=$'macos=true\narm=true'
+            eval "$(printf '%s\n' "$reach" | sed 's/^/lock_/')"
+
+            touches '^crates/|^Cargo\.(toml|lock)$|^\.cargo/|^rust-toolchain|^scripts/package\.sh$|^\.github/' || rust=false
+            touches '^scripts/package\.sh$|^\.github/' || package=false
+
+            # The arm64 runners are few. A pull request takes them only for
+            # code that names an architecture, or a lock change that reaches
+            # a package only arm64 compiles.
+            arm=false
+            if [ "$lock_arm" = true ] || touches '^\.cargo/|^rust-toolchain|^\.github/' \
+              || mentions 'rs|toml' 'target_arch'; then
+              arm=true
+            fi
+
+            # The macOS runners are fewer still. A pull request takes one only
+            # for what Linux cannot check: the FSEvents watcher and the daemon
+            # around it, jemalloc, the macOS-only CLI and capability code, the
+            # integration tests that drive the watcher, the manifests and
+            # toolchain, a lock change reaching a macOS-only package, and a
+            # Rust file holding `target_os = "macos"`, so new Apple-only code
+            # is caught without editing this list.
+            macos=false
+            if [ "$lock_macos" = true ] \
+              || touches '^crates/watchwoman/src/(daemon/|cli\.rs$|lib\.rs$|commands/(info|watch|debug)\.rs$)|^crates/watchwoman/tests/|^crates/watchwoman-tests/|(^|/)Cargo\.toml$|(^|/)build\.rs$|^\.cargo/|^rust-toolchain|^scripts/package\.sh$|^\.github/' \
+              || mentions 'rs' 'target_os = "macos"'; then
+              macos=true
+            fi
+
+            # Main checks every platform for any Rust change, catching what a
+            # pull request let through on the x86_64 checks alone, and keeps
+            # each platform's cache current for the pull requests after it.
+            if [ "$EVENT" = "push" ]; then
+              arm=$rust macos=$rust
+            fi
+          fi
+          # A release builds every platform. A release pull request runs every
+          # check; the release itself does not repeat them on macOS, where
+          # `macos-release` builds instead.
+          if [ "$release" = true ]; then
+            rust=true arm=true package=true
+            if [ "$EVENT" = "pull_request" ]; then macos=true; else macos=false; fi
+          fi
+          {
+            echo "rust=$rust"
+            echo "arm=$arm"
+            echo "macos=$macos"
+            echo "package=$package"
+            echo "release=$release"
+            echo "version=$version"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  # GitHub has no priority among its runners, and the account's few macOS
+  # ones are what a release waits on. A release cancels this repository's
+  # pull request runs, which are re-run from their page or by the next push,
+  # and main's earlier non-release runs, which a newer one supersedes. At the
+  # start rather than in CD, so the release build that starts alongside the
+  # checks finds the runners free. A job of its own, so only it holds a token
+  # that can cancel runs.
+  make-room:
+    name: Make room for the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: changes
+    if: github.event_name != 'pull_request' && needs.changes.outputs.release == 'true'
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          SELF: ${{ github.run_id }}
+        run: |
+          for status in requested queued pending waiting in_progress; do
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow ci-cd.yml --status "$status" --limit 100 \
+              --json databaseId,event,headBranch,displayTitle \
+              --jq '.[] | select(.event == "pull_request" or (.event == "push" and .headBranch == "main" and (.displayTitle | startswith("release: ") | not))) | .databaseId'
+          done | sort -u | while read -r id; do
+            [ "$id" = "$SELF" ] && continue
+            echo "cancelling run $id"
+            gh run cancel "$id" --repo "$GITHUB_REPOSITORY" || true
+          done
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No Rust cache: formatting compiles nothing.
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # CHANGELOG.md is generated from changelog.d/ (scripts/changelog.py). A pull
+  # request adds fragments without regenerating it, so only its fragments and
+  # the released versions are checked; one that writes CHANGELOG.md, as a
+  # release does, must write exactly what the fragments make. Every change
+  # adds a fragment, so this runs on every change.
+  changelog:
+    name: Changelog
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - run: python3 -m unittest scripts/test_changelog.py
+      - env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = "pull_request" ] && git diff --name-only HEAD^1 HEAD | grep -qx CHANGELOG.md; then
+            python3 scripts/changelog.py --check
+          else
+            python3 scripts/changelog.py --lint
+          fi
+
+  # Clippy and the tests on one runner, with one target directory and one
+  # cache. Each check runs however the other went, so one push reports every
+  # failure; neither runs after a failed setup step. The same packages and
+  # features on pull requests as on main, so pull requests restore what main
+  # saves.
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    timeout-minutes: 45
+    concurrency:
+      group: linux-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - id: cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: linux
+          # Branch-scoped caches aren't readable from other branches, so a PR
+          # saving here only evicts the main entry every PR restores from.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Tests
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
+        run: cargo test --workspace --all-features
+
+  # `rust-version` is a promise to anyone doing `cargo install`. Keep the
+  # toolchain here in lockstep with `rust-version` in the workspace manifest.
+  # `--all-targets` so dev-deps count too.
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    timeout-minutes: 30
+    concurrency:
+      group: msrv-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: "1.88"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: msrv
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - run: cargo check --workspace --all-targets
+
+  # The Linux release tarballs, built on every change to what they contain so
+  # a musl break fails the pull request rather than the release. The release
+  # attaches these artifacts as they are; nothing is rebuilt. Pinned runners,
+  # so a release is built where its pull request was.
+  #
+  # Windows is absent: watchwoman is built on unix sockets and nix-flavoured
+  # syscalls (setsid, inotify/FSEvents, passwd lookup). A Windows port needs
+  # named pipes and a different watcher backend.
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    timeout-minutes: 45
+    concurrency:
+      group: build-${{ matrix.platform }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # glibc, dynamic
+          - { target: x86_64-unknown-linux-gnu,  platform: linux-amd64-gnu  }
+          # musl, static, portable across distros
+          - { target: x86_64-unknown-linux-musl, platform: linux-amd64-musl }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install musl toolchain
+        if: endsWith(matrix.target, '-musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - run: cargo build --release --locked --target ${{ matrix.target }} --bins -p watchwoman
+      - run: scripts/package.sh ${{ matrix.target }}
+      # Named for the platform alone; the release gathers `watchwoman-*`.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: watchwoman-${{ matrix.platform }}
+          path: dist/*.tar.gz*
+
+  # The same for arm64, on the scarcer arm runners: on a pull request only
+  # when `changes` finds something x86_64 cannot check, on main for any Rust
+  # change, and always for a release.
+  build-arm:
+    name: Build ${{ matrix.platform }}
+    runs-on: ubuntu-24.04-arm
+    needs: changes
+    if: needs.changes.outputs.arm == 'true'
+    timeout-minutes: 45
+    concurrency:
+      group: build-${{ matrix.platform }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-unknown-linux-gnu,  platform: linux-arm64-gnu  }
+          - { target: aarch64-unknown-linux-musl, platform: linux-arm64-musl }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install musl toolchain
+        if: endsWith(matrix.target, '-musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - run: cargo build --release --locked --target ${{ matrix.target }} --bins -p watchwoman
+      - run: scripts/package.sh ${{ matrix.target }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: watchwoman-${{ matrix.platform }}
+          path: dist/*.tar.gz*
+
+  # The account's few macOS runners are shared by every repository, so macOS
+  # takes one job over one target directory and one cache: clippy and the
+  # tests, each run however the other went. A release pull request, or one
+  # changing how tarballs are packaged, also builds and packages the release
+  # unsigned, so a packaging break shows before it merges. Intel macOS is not
+  # built.
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    needs: changes
+    if: needs.changes.outputs.macos == 'true'
+    timeout-minutes: 60
+    concurrency:
+      group: macos-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: true
+    env:
+      TARGET: aarch64-apple-darwin
+      PACKAGE: ${{ github.event_name == 'pull_request' && (needs.changes.outputs.release == 'true' || needs.changes.outputs.package == 'true') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - id: cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: macos
+          # Restoring a stale ~/.cargo/bin/ over the freshly installed rustup
+          # proxy leaves `cargo` pointing at a half-bootstrapped rustup-init
+          # shim on the macOS arm64 runners. The registry, git and target
+          # caches still restore; only ~/.cargo/bin/ is skipped.
+          cache-bin: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Tests
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
+        run: cargo test --workspace --all-features
+      - name: Build
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' && env.PACKAGE == 'true' }}
+        run: cargo build --release --locked --target "$TARGET" --bins -p watchwoman
+      - name: Package
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' && env.PACKAGE == 'true' }}
+        run: scripts/package.sh "$TARGET"
+
+  # The one status the ruleset requires. Skipped jobs are domains the change
+  # does not touch and pass; anything failed or cancelled fails it.
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [changes, fmt, changelog, linux, msrv, build, build-arm, macos]
+    if: always()
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          bad=$(echo "$NEEDS" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key')
+          if [ -n "$bad" ]; then
+            echo "::error::not passed: ${bad//$'\n'/ }"
+            exit 1
+          fi
+
+  # ── CD ──────────────────────────────────────────────────────────────────
+  #
+  # Main only. `checks` runs whatever its needs did, so every job here states
+  # the results it depends on rather than relying on the default, which would
+  # skip it whenever any job upstream was skipped.
+
+  # Signed and notarised macOS binaries, which CI has no use for. Started by
+  # `changes` rather than after `Checks`: it is the longest job in a release
+  # and publishes nothing, so it builds while the checks run, and publishing
+  # waits for both.
+  macos-release:
+    name: Release (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    needs: changes
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.changes.outputs.release == 'true'
+    env:
+      TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: macos-release
+          cache-bin: "false"
+          cache-on-failure: true
+      - run: cargo build --release --locked --target "$TARGET" --bins -p watchwoman
+      # Developer ID signed and notarised, so the tarball runs from a browser
+      # download without clearing quarantine. The action fails when a signing
+      # secret is missing, so a release never ships an unsigned binary.
+      - name: Sign and notarise
+        uses: radiosilence/blit-workflows/macos-notarise@c8a650dfa5a0fbe012c61eab28f615c1983aee18
+        with:
+          binaries: |
+            target/aarch64-apple-darwin/release/watchwoman
+            target/aarch64-apple-darwin/release/watchman
+            target/aarch64-apple-darwin/release/watchman-wait
+            target/aarch64-apple-darwin/release/watchman-make
+            target/aarch64-apple-darwin/release/watchman-diag
+            target/aarch64-apple-darwin/release/watchmanctl
+          certificate-p12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          api-key-p8: ${{ secrets.APPLE_API_KEY_P8 }}
+          api-key-id: ${{ secrets.APPLE_API_KEY_ID }}
+          api-issuer-id: ${{ secrets.APPLE_API_ISSUER_ID }}
+      - run: scripts/package.sh "$TARGET"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: watchwoman-macos-arm64
+          path: dist/*.tar.gz*
+
+  check-version:
+    name: Check Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [changes, checks]
+    if: ${{ !cancelled() && needs.checks.result == 'success' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.changes.outputs.release == 'true' }}
+    outputs:
+      should_release: ${{ needs.changes.outputs.release }}
+      version: ${{ needs.changes.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # watchwoman depends on the protocol crate by path and by version, and
+      # crates.io sees only the version: a stale pin publishes watchwoman
+      # against the previous protocol release.
+      - env:
+          VERSION: ${{ needs.changes.outputs.version }}
+        run: |
+          if ! grep -q "^watchwoman-protocol = .*version = \"${VERSION}\"" Cargo.toml; then
+            echo "::error::the watchwoman-protocol pin in Cargo.toml is not ${VERSION}"
+            exit 1
+          fi
+
+  # Once every build the release ships has passed: a version on crates.io
+  # cannot be taken back, so it goes out only once the rest of the release can
+  # follow it, and a failure here leaves nothing released for a manual run to
+  # trip over. Publishing errors on a version already out, so a re-run checks
+  # the index first. The protocol crate goes first, since watchwoman depends
+  # on it; watchwoman-tests is not published. --no-verify because this run has
+  # already built and tested the commit.
+  crates:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [check-version, build, build-arm, macos-release]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') && needs.check-version.outputs.should_release == 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::notice::CARGO_TOKEN is not set; skipping the crates.io publish"
+            exit 0
+          fi
+          for crate in watchwoman-protocol watchwoman; do
+            if curl -sf "https://index.crates.io/wa/tc/${crate}" | grep -q "\"vers\":\"${VERSION}\""; then
+              echo "${crate} ${VERSION} is already on crates.io"
+              continue
+            fi
+            cargo publish -p "${crate}" --locked --no-verify
+          done
+
+  # Creates the tag through the API, on the commit that was built, with the
+  # tarballs CI built. The notes are the version's section of CHANGELOG.md.
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [check-version, build, build-arm, macos-release, crates]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') && needs.check-version.outputs.should_release == 'true' }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Release notes
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          awk -v h="## $VERSION" '$0==h{f=1;next} f&&/^## /{exit} f' CHANGELOG.md > notes.md
+          if ! grep -q . notes.md; then
+            echo "::error::CHANGELOG.md has no section for $VERSION"
+            exit 1
+          fi
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: watchwoman-*
+          path: artifacts
+      - name: Stage release files
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) \
+            -exec cp {} release/ \;
+          ls -la release/
+          # Five platforms, each a tarball and its sha256.
+          count=$(find release -type f | wc -l | tr -d ' ')
+          if [ "$count" -lt 10 ]; then
+            echo "expected >=10 release files, got $count; aborting" >&2
+            exit 1
+          fi
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          token: ${{ secrets.RELEASE_TOKEN }}
+          tag_name: v${{ needs.check-version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: v${{ needs.check-version.outputs.version }}
+          body_path: notes.md
+          files: release/*
+
+  # After the release, so the formula never names a tarball that does not
+  # exist. Skips without RELEASE_TOKEN, which pushes to the tap.
+  homebrew:
+    name: Update Homebrew Tap
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [check-version, release]
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    steps:
+      - name: Check tap token
+        id: gate
+        env:
+          TAP_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::notice::RELEASE_TOKEN is not set; skipping the tap update"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout tap
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: radiosilence/homebrew-watchwoman
+          token: ${{ secrets.RELEASE_TOKEN }}
+          path: tap
+
+      - name: Download CI artifacts
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: watchwoman-*
+          path: artifacts
+
+      - name: Collect sha256s and regenerate formula
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          declare -A SHAS
+          while read -r f; do
+            tar_name=$(basename "$f" .sha256)
+            sha=$(awk '{print $1}' "$f")
+            SHAS["$tar_name"]=$sha
+          done < <(find artifacts -name '*.tar.gz.sha256' -type f)
+          must() {
+            local key="$1"
+            local val="${SHAS[$key]:-}"
+            if [ -z "$val" ]; then
+              echo "missing sha256 for $key" >&2
+              exit 1
+            fi
+            echo "$val"
+          }
+          # Tarball names as scripts/package.sh writes them.
+          MACOS_ARM_SHA=$(must "watchwoman-${VERSION}-aarch64-apple-darwin.tar.gz")
+          LINUX_ARM_SHA=$(must "watchwoman-${VERSION}-aarch64-unknown-linux-gnu.tar.gz")
+          LINUX_AMD_SHA=$(must "watchwoman-${VERSION}-x86_64-unknown-linux-gnu.tar.gz")
+
+          URL_BASE="https://github.com/radiosilence/watchwoman/releases/download/v${VERSION}"
+
+          cat > tap/Formula/watchwoman.rb <<EOF
+          class Watchwoman < Formula
+            desc "Drop-in watchman replacement that doesn't eat your RAM"
+            homepage "https://github.com/radiosilence/watchwoman"
+            version "${VERSION}"
+            license any_of: ["MIT", "Apache-2.0"]
+
+            on_macos do
+              depends_on arch: :arm64
+              url "${URL_BASE}/watchwoman-${VERSION}-aarch64-apple-darwin.tar.gz"
+              sha256 "${MACOS_ARM_SHA}"
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "${URL_BASE}/watchwoman-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${LINUX_ARM_SHA}"
+              else
+                url "${URL_BASE}/watchwoman-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${LINUX_AMD_SHA}"
+              end
+            end
+
+            def install
+              %w[watchwoman watchman watchman-wait watchman-make watchman-diag watchmanctl].each do |b|
+                bin.install b
+              end
+            end
+
+            def caveats
+              <<~EOS
+                watchwoman ships a \`watchman\` binary for drop-in compatibility.
+                If you previously installed facebook/fb's watchman, uninstall it
+                and make sure #{HOMEBREW_PREFIX}/bin comes first on your PATH:
+
+                  brew uninstall --ignore-dependencies watchman || true
+                  which watchman   # should resolve to #{HOMEBREW_PREFIX}/bin/watchman
+
+                See https://github.com/radiosilence/watchwoman/blob/main/docs/REPLACING_WATCHMAN.md
+              EOS
+            end
+
+            test do
+              assert_match "watchwoman", shell_output("#{bin}/watchwoman --version")
+              assert_match "watchwoman", shell_output("#{bin}/watchman --version")
+            end
+          end
+          EOF
+
+      - name: Commit and push formula
+        if: steps.gate.outputs.skip != 'true'
+        working-directory: tap
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet Formula/watchwoman.rb; then
+            echo "Formula already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/watchwoman.rb
+          git commit -m "watchwoman ${VERSION}"
+          git push
