@@ -46,6 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     outputs:
@@ -65,11 +66,13 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
+          REF: ${{ github.ref }}
         # The domains a change touches, from its diff. A pull request's is
         # against its base. A push's is against the last commit on main whose
         # run passed, so a push whose run was cancelled by the next one still
-        # gets its checks; without one in recent history, the commit before.
-        # A manual run, or a diff that cannot be worked out, runs everything.
+        # gets its checks. A manual run, or a diff that cannot be worked out
+        # (including a push whose last passing commit cannot be found), runs
+        # everything.
         #
         # Allowlists, so the question is "did any source of this domain
         # change?" rather than "was everything recognisably irrelevant?". A new
@@ -87,7 +90,7 @@ jobs:
         #
         # Steps run under `bash -e`, where grep finding nothing is a failing
         # command rather than an answer, so every question is asked in a
-        # condition.
+        # condition, and each grep reads a captured list rather than a pipe.
         run: |
           rust=true arm=true macos=true package=true release=false
           version_of() { sed -n 's/^version = "\(.*\)"/\1/p' | head -1; }
@@ -101,22 +104,27 @@ jobs:
           fi
           base=HEAD^1
           if [ "$EVENT" = "push" ]; then
+            base=
             passed=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci-cd.yml --branch main --event push \
-              --status success --limit 1 --json headSha --jq '.[0].headSha' 2>/dev/null || true)
-            if [ -n "$passed" ] && [ "$passed" != "$(git rev-parse HEAD)" ] && git fetch -q --deepen=100 origin main && git merge-base --is-ancestor "$passed" HEAD; then
+              --status success --limit 1 --json headSha --jq '.[0].headSha // empty' 2>/dev/null || true)
+            if [ -n "$passed" ] && git fetch -q --deepen=100 origin main && git merge-base --is-ancestor "$passed" HEAD; then
               base=$passed
+            else
+              echo "no passing main commit to diff against -- running everything"
             fi
           fi
           # Whether this run releases, the one answer every release job reads.
-          # A pull request: a release PR (branch `release-*`, or a version
-          # change), which runs everything. A push: it changes the version
-          # and that version is not out yet; comparing with the latest release
-          # alone would let a push landing while a release runs release it
-          # again. A manual run, which is how a failed release is retried:
-          # whatever version is not out yet.
+          # Only on main: a manual run on a branch releases nothing. A pull
+          # request: a release PR (branch `release-*`, or a version change),
+          # which runs everything. A push: the version differs from the
+          # diff's base and that version is not out yet; comparing with the
+          # latest release alone would let a push landing while a release runs
+          # release it again. A manual run, which is how a failed release is
+          # retried: whatever version is not out yet. Only a 404 means not
+          # out; any other answer fails this job rather than guess.
           version=$(version_of < Cargo.toml)
           bumped=false
-          if [ "$(git show HEAD^1:Cargo.toml 2>/dev/null | version_of)" != "$version" ]; then
+          if [ "$(git show "${base:-HEAD^1}:Cargo.toml" 2>/dev/null | version_of)" != "$version" ]; then
             bumped=true
           fi
           case "$EVENT" in
@@ -125,23 +133,35 @@ jobs:
               release=$bumped
               ;;
             *)
-              if { [ "$EVENT" = workflow_dispatch ] || [ "$bumped" = true ]; } \
-                && ! gh release view "v$version" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-                release=true
+              if [ "$REF" = refs/heads/main ] && { [ "$EVENT" = workflow_dispatch ] || [ "$bumped" = true ]; }; then
+                if out=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$version" 2>&1); then
+                  echo "v$version is already released"
+                elif grep -q 'HTTP 404' <<<"$out"; then
+                  release=true
+                else
+                  echo "::error::cannot tell whether v$version is released: $out"
+                  exit 1
+                fi
               fi
               ;;
           esac
-          touches() { printf '%s\n' "$files" | grep -E "$1" | grep -qvE '\.md$'; }
+          touches() {
+            local m
+            m=$(grep -E "$1" <<<"$files" | grep -vE '\.md$' || true)
+            [ -n "$m" ]
+          }
           # Changed files of the given extensions that mention a pattern.
           mentions() {
-            printf '%s\n' "$files" | grep -E "\.($1)\$" | while read -r f; do
-              if [ -f "$f" ] && grep -qE "$2" "$f"; then echo "$f"; fi
-            done | grep -q .
+            local f
+            while read -r f; do
+              if [ -f "$f" ] && grep -qE "$2" "$f"; then return 0; fi
+            done < <(grep -E "\.($1)\$" <<<"$files" || true)
+            return 1
           }
           if [ "$state" != "OPEN" ]; then
             echo "pull request #$PR is no longer open -- skipping everything"
             rust=false arm=false macos=false package=false release=false
-          elif [ "$EVENT" != "workflow_dispatch" ] && files=$(git diff --name-only "$base" HEAD); then
+          elif [ "$EVENT" != "workflow_dispatch" ] && [ -n "$base" ] && files=$(git diff --name-only "$base" HEAD); then
             echo "changes since $(git rev-parse --short "$base"):"
             printf '%s\n' "$files" | sed 's/^/  /'
             # Cargo.lock is shared by every platform; it counts for the
@@ -211,20 +231,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: changes
-    if: github.event_name != 'pull_request' && needs.changes.outputs.release == 'true'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.changes.outputs.release == 'true'
     permissions:
       actions: write
     steps:
       - env:
           GH_TOKEN: ${{ github.token }}
           SELF: ${{ github.run_id }}
+        # Best effort: release builds need this job, so a failed lookup or
+        # cancel is reported and passed over. A main run counts as a release,
+        # and is left alone, by the same rule as the workflow's concurrency
+        # group: head commit titled `release: `, or modifying Cargo.toml.
         run: |
           for status in requested queued pending waiting in_progress; do
             gh run list --repo "$GITHUB_REPOSITORY" --workflow ci-cd.yml --status "$status" --limit 100 \
-              --json databaseId,event,headBranch,displayTitle \
-              --jq '.[] | select(.event == "pull_request" or (.event == "push" and .headBranch == "main" and (.displayTitle | startswith("release: ") | not))) | .databaseId'
-          done | sort -u | while read -r id; do
+              --json databaseId,event,headBranch,headSha,displayTitle \
+              --jq '.[] | select(.event == "pull_request" or (.event == "push" and .headBranch == "main" and (.displayTitle | startswith("release: ") | not))) | "\(.databaseId) \(.event) \(.headSha)"' \
+              || echo "::warning::could not list $status runs"
+          done | sort -u | while read -r id event sha; do
             [ "$id" = "$SELF" ] && continue
+            if [ "$event" = push ]; then
+              modified=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.files[] | select(.status == "modified") | .filename' || echo Cargo.toml)
+              if grep -qx Cargo.toml <<<"$modified"; then
+                echo "leaving run $id, which may release"
+                continue
+              fi
+            fi
             echo "cancelling run $id"
             gh run cancel "$id" --repo "$GITHUB_REPOSITORY" || true
           done
@@ -278,9 +310,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     timeout-minutes: 45
-    concurrency:
-      group: linux-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-      cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
@@ -310,9 +339,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     timeout-minutes: 30
-    concurrency:
-      group: msrv-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-      cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
@@ -339,9 +365,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     timeout-minutes: 45
-    concurrency:
-      group: build-${{ matrix.platform }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
@@ -373,6 +396,7 @@ jobs:
         with:
           name: watchwoman-${{ matrix.platform }}
           path: dist/*.tar.gz*
+          retention-days: ${{ needs.changes.outputs.release == 'true' && 90 || 7 }}
 
   # The same for arm64, on the scarcer arm runners: on a pull request only
   # when `changes` finds something x86_64 cannot check, on main for any Rust
@@ -383,9 +407,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.arm == 'true'
     timeout-minutes: 45
-    concurrency:
-      group: build-${{ matrix.platform }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
@@ -414,6 +435,7 @@ jobs:
         with:
           name: watchwoman-${{ matrix.platform }}
           path: dist/*.tar.gz*
+          retention-days: ${{ needs.changes.outputs.release == 'true' && 90 || 7 }}
 
   # The account's few macOS runners are shared by every repository, so macOS
   # takes one job over one target directory and one cache: clippy and the
@@ -427,9 +449,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.macos == 'true'
     timeout-minutes: 60
-    concurrency:
-      group: macos-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-      cancel-in-progress: true
     env:
       TARGET: aarch64-apple-darwin
       PACKAGE: ${{ github.event_name == 'pull_request' && (needs.changes.outputs.release == 'true' || needs.changes.outputs.package == 'true') }}
@@ -488,15 +507,15 @@ jobs:
   # skip it whenever any job upstream was skipped.
 
   # Signed and notarised macOS binaries, which CI has no use for. Started by
-  # `changes` rather than after `Checks`: it is the longest job in a release
-  # and publishes nothing, so it builds while the checks run, and publishing
-  # waits for both.
+  # `changes` (via `make-room`, which frees the runner it queues on) rather
+  # than after `Checks`: it is the longest job in a release and publishes
+  # nothing, so it builds while the checks run, and publishing waits for both.
   macos-release:
     name: Release (macOS)
     runs-on: macos-latest
     timeout-minutes: 60
-    needs: changes
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.changes.outputs.release == 'true'
+    needs: [changes, make-room]
+    if: ${{ !cancelled() && needs.make-room.result == 'success' && needs.changes.outputs.release == 'true' }}
     env:
       TARGET: aarch64-apple-darwin
     steps:
@@ -533,6 +552,7 @@ jobs:
         with:
           name: watchwoman-macos-arm64
           path: dist/*.tar.gz*
+          retention-days: ${{ needs.changes.outputs.release == 'true' && 90 || 7 }}
 
   check-version:
     name: Check Version
