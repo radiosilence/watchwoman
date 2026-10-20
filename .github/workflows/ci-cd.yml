@@ -271,7 +271,7 @@ jobs:
           done | sort -u | while read -r id event sha; do
             [ "$id" = "$SELF" ] && continue
             if [ "$event" = push ]; then
-              changed=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.files[].filename' || echo Cargo.toml)
+              changed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.files[].filename' || echo Cargo.toml)
               if grep -qx Cargo.toml <<<"$changed"; then
                 echo "leaving run $id, which may release"
                 continue
