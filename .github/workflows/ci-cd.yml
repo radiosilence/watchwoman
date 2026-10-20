@@ -107,7 +107,9 @@ jobs:
             base=
             passed=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci-cd.yml --branch main --event push \
               --status success --limit 1 --json headSha --jq '.[0].headSha // empty' 2>/dev/null || true)
-            if [ -n "$passed" ] && git fetch -q --deepen=100 origin main && git merge-base --is-ancestor "$passed" HEAD; then
+            if [ "$passed" = "$(git rev-parse HEAD)" ]; then
+              base=HEAD^1
+            elif [ -n "$passed" ] && git fetch -q --deepen=200 origin main && git merge-base --is-ancestor "$passed" HEAD; then
               base=$passed
             else
               echo "no passing main commit to diff against -- running everything"
@@ -241,7 +243,7 @@ jobs:
         # Best effort: release builds need this job, so a failed lookup or
         # cancel is reported and passed over. A main run counts as a release,
         # and is left alone, by the same rule as the workflow's concurrency
-        # group: head commit titled `release: `, or modifying Cargo.toml.
+        # group: head commit titled `release: `, or changing Cargo.toml.
         run: |
           for status in requested queued pending waiting in_progress; do
             gh run list --repo "$GITHUB_REPOSITORY" --workflow ci-cd.yml --status "$status" --limit 100 \
@@ -251,8 +253,8 @@ jobs:
           done | sort -u | while read -r id event sha; do
             [ "$id" = "$SELF" ] && continue
             if [ "$event" = push ]; then
-              modified=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.files[] | select(.status == "modified") | .filename' || echo Cargo.toml)
-              if grep -qx Cargo.toml <<<"$modified"; then
+              changed=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.files[].filename' || echo Cargo.toml)
+              if grep -qx Cargo.toml <<<"$changed"; then
                 echo "leaving run $id, which may release"
                 continue
               fi
