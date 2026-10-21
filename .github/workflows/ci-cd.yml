@@ -605,7 +605,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [changes, check-version, build, build-arm, macos-release]
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') && needs.check-version.result == 'success' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.build.result == 'success' && needs.build-arm.result == 'success' && needs.macos-release.result == 'success' && needs.check-version.result == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
@@ -635,7 +635,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [changes, check-version, build, build-arm, macos-release, crates]
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') && needs.check-version.result == 'success' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.build.result == 'success' && needs.build-arm.result == 'success' && needs.macos-release.result == 'success' && needs.crates.result == 'success' && needs.check-version.result == 'success' }}
     permissions:
       contents: write
     steps:
