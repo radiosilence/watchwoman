@@ -14,7 +14,17 @@ A drop-in, wire-compatible replacement for Facebook watchman: the same JSON and 
 
 ## Releasing
 
-`just release patch|minor|major` (or an exact `X.Y.Z`) branches from main, bumps the workspace version, the `watchwoman-protocol` pin and `Cargo.lock`, turns the unreleased fragments into the version and opens the release PR; the Release workflow does the same from GitHub. Merging it is the release: CI publishes both crates to crates.io, then the GitHub release with the five platform tarballs and the changelog section as notes, then the Homebrew formula in `radiosilence/homebrew-watchwoman`. A push releases only when it changes the version; `gh workflow run ci.yml` on main retries a release that failed part way.
+`just release patch|minor|major` (or an exact `X.Y.Z`) branches from main, bumps the workspace version, the `watchwoman-protocol` pin and `Cargo.lock`, turns the unreleased fragments into the version and opens the release PR; the Release workflow does the same from GitHub. Merging it is the release: CI publishes both crates to crates.io, then the GitHub release with the five platform tarballs and the changelog section as notes, then the Homebrew formula in `radiosilence/homebrew-watchwoman`. A push releases only when it changes the version; `gh workflow run ci-cd.yml` on main retries a release that failed part way.
+
+## CI/CD
+
+`.github/workflows/ci-cd.yml` is one pipeline. Its first job, `Changes`, diffs the change (a pull request against its base, a push against the last main commit whose run passed) and sets one output per domain: `rust` (the x86_64 Linux jobs), `arm` (the arm64 Linux builds), `macos` (the macOS job) and `package` (how tarballs are assembled). Each job runs under a job-level `if:` on its domain, so a docs-only change skips nearly everything, and a skipped job is a pass. `Checks` needs every CI job and fails only on a failure or cancellation; it is the one status branch protection should require, so jobs can be added or renamed without touching it.
+
+macOS and arm64 runners are scarce, so a pull request takes them only for what x86_64 Linux cannot check: Apple- or architecture-specific code, and `Cargo.lock` changes that reach a package only those targets compile (`.github/scripts/lock_reach.py` decides; on failure it counts). Main runs every platform for any Rust change. A release pull request runs everything.
+
+`Changes` also decides, once, whether the run releases: a push that changes the version to one not yet released, or a manual run with an unreleased version. The release then cancels pull request runs (`Make room for the release`), builds the signed macOS tarball alongside the checks, and after `Checks` publishes crates, the GitHub release with the tarballs CI built, and the Homebrew formula.
+
+To add a domain, add an output and its path allowlist in `Changes` (Markdown is ignored, `.github/` counts for every domain), gate the new jobs on it, and add them to `needs` of `Checks`.
 
 ## Check
 

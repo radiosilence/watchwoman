@@ -1,0 +1,1 @@
+- **One CI/CD pipeline gated by `Checks`.** `ci.yml` becomes `ci-cd.yml`: jobs run only for the domains a change touches, the macOS and arm64 runners only for what x86_64 Linux cannot check, `Checks` is the single required status, and the release publishes the tarballs CI built only after it passes.

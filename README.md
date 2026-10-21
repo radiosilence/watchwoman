@@ -296,6 +296,8 @@ cargo run -p watchwoman-tests --bin record-fixtures   # refresh parity fixtures
 
 Pre-push hooks: `cargo fmt --all` + `cargo clippy --workspace -- -D warnings`.
 
+CI runs only the jobs a change's paths reach, and the `Checks` job is the single required status; `CLAUDE.md` explains the domains and how to add one.
+
 ### Layout
 
 - `crates/watchwoman` — daemon, CLI, query engine, watcher, companion bins.
