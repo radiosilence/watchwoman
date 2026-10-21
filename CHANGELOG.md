@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.2
+
+### Removed
+
+- **No Intel macOS build.** Releases ship `aarch64-apple-darwin` only, and the Homebrew formula requires Apple silicon on macOS; Intel Macs can build from source with `cargo install watchwoman`. CI runs macOS in a single job, and only for pull requests that touch Apple-specific code, manifests or workflows, and for releases, since the account's few macOS runners are shared across repositories.
+
+### Internal
+
+- **Release script recuts a stale branch.** `scripts/release.sh` deletes a release branch whose PR was closed or merged, locally and on origin, and cuts it again from origin/main; a branch with an open PR still stops it.
+- **The pre-push hook only checks formatting.** Clippy no longer runs before every push; CI runs it on every pull request, so a push is not held up running it locally.
+- **One CI/CD pipeline gated by `Checks`.** `ci.yml` becomes `ci-cd.yml`: jobs run only for the domains a change touches, the macOS and arm64 runners only for what x86_64 Linux cannot check, `Checks` is the single required status, and the release publishes the tarballs CI built only after it passes.
+- **Dependencies updated to their latest releases.** Includes tikv-jemallocator 0.6 → 0.7 and tikv-jemalloc-sys 0.6 → 0.7.
+
 ## 0.8.1
 
 ### Internal
