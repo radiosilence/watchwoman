@@ -89,8 +89,8 @@ indexmap = { version = "2", features = ["serde"] }
 # allocator hasn't handed it back", which is the exact distinction that
 # took a 4 GB leak months to spot.
 [target.'cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))'.dependencies]
-tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms"] }
-tikv-jemalloc-sys = { version = "0.6", features = ["stats"] }
+tikv-jemallocator = { version = "0.7", features = ["unprefixed_malloc_on_supported_platforms"] }
+tikv-jemalloc-sys = { version = "0.7", features = ["stats"] }
 
 [dev-dependencies]
 watchwoman-tests = { path = "../watchwoman-tests" }
