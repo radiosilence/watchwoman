@@ -1,0 +1,1 @@
+- **Dependencies updated to their latest releases.** Includes tikv-jemallocator 0.6 → 0.7 and tikv-jemalloc-sys 0.6 → 0.7.
