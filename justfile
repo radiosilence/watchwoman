@@ -1,7 +1,8 @@
 # watchwoman — a drop-in watchman replacement
 
-# What CI checks: format, lint with warnings as errors, tests.
+# What CI checks: format, lint with warnings as errors, tests, workflow lint.
 check:
+    actionlint
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     cargo test --workspace --all-features
