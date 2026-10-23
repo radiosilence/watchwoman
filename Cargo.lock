@@ -1369,7 +1369,7 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "watchwoman"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "allocator-api2 0.4.0",
  "anyhow",
@@ -1404,7 +1404,7 @@ dependencies = [
 
 [[package]]
 name = "watchwoman-protocol"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "bytes",
  "indexmap",
@@ -1416,7 +1416,7 @@ dependencies = [
 
 [[package]]
 name = "watchwoman-tests"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "indexmap",
