@@ -18,7 +18,7 @@ A drop-in, wire-compatible replacement for Facebook watchman: the same JSON and 
 
 ## CI/CD
 
-`.github/workflows/ci-cd.yml` is one pipeline. Its first job, `Changes`, diffs the change (a pull request against its base, a push against the last main commit whose run passed) and sets one output per domain: `rust` (the x86_64 Linux jobs), `arm` (the arm64 Linux builds), `macos` (the macOS job) and `package` (how tarballs are assembled). Each job runs under a job-level `if:` on its domain, so a docs-only change skips nearly everything, and a skipped job is a pass. `Checks` needs every CI job and fails only on a failure or cancellation; it is the one status branch protection should require, so jobs can be added or renamed without touching it.
+`.github/workflows/ci-cd.yml` is one pipeline. Its first job, `Changes`, diffs the change (a pull request against its base, a push against the last main commit whose run passed) and sets one output per domain: `rust` (the x86_64 Linux jobs), `arm` (the arm64 Linux builds), `macos` (the macOS job) `package` (how tarballs are assembled) and `workflows` (`.github/workflows/`, `.github/actions/`; runs actionlint). Each job runs under a job-level `if:` on its domain, so a docs-only change skips nearly everything, and a skipped job is a pass. `Checks` needs every CI job and fails only on a failure or cancellation; it is the one status branch protection should require, so jobs can be added or renamed without touching it.
 
 macOS and arm64 runners are scarce, so a pull request takes them only for what x86_64 Linux cannot check: Apple- or architecture-specific code, and `Cargo.lock` changes that reach a package only those targets compile (`.github/scripts/lock_reach.py` decides; on failure it counts). Main runs every platform for any Rust change. A release pull request runs everything.
 
@@ -29,6 +29,6 @@ To add a domain, add an output and its path allowlist in `Changes` (Markdown is 
 ## Check
 
 ```sh
-just check   # fmt --check, clippy -D warnings, tests
+just check   # actionlint, fmt --check, clippy -D warnings, tests
 just fmt
 ```
