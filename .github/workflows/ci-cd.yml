@@ -54,6 +54,7 @@ jobs:
       arm: ${{ steps.filter.outputs.arm }}
       macos: ${{ steps.filter.outputs.macos }}
       package: ${{ steps.filter.outputs.package }}
+      workflows: ${{ steps.filter.outputs.workflows }}
       release: ${{ steps.filter.outputs.release }}
       version: ${{ steps.filter.outputs.version }}
     steps:
@@ -92,7 +93,7 @@ jobs:
         # command rather than an answer, so every question is asked in a
         # condition, and each grep reads a captured list rather than a pipe.
         run: |
-          rust=true arm=true macos=true package=true release=false
+          rust=true arm=true macos=true package=true workflows=true release=false
           version_of() { sed -n 's/^version = "\(.*\)"/\1/p' | head -1; }
           # A pull request merged or closed as its run was created: the
           # cancelling workflow can look before this run is listed, and the
@@ -162,7 +163,7 @@ jobs:
           }
           if [ "$state" != "OPEN" ]; then
             echo "pull request #$PR is no longer open -- skipping everything"
-            rust=false arm=false macos=false package=false release=false
+            rust=false arm=false macos=false package=false workflows=false release=false
           elif [ "$EVENT" != "workflow_dispatch" ] && [ -n "$base" ] && files=$(git diff --name-only "$base" HEAD); then
             echo "changes since $(git rev-parse --short "$base"):"
             printf '%s\n' "$files" | sed 's/^/  /'
@@ -178,6 +179,7 @@ jobs:
 
             touches '^crates/|^Cargo\.(toml|lock)$|^\.cargo/|^rust-toolchain|^scripts/package\.sh$|^\.github/' || rust=false
             touches '^scripts/package\.sh$|^\.github/' || package=false
+            touches '^\.github/(workflows|actions)/' || workflows=false
 
             # The arm64 runners are few. A pull request takes them only for
             # code that names an architecture, or a lock change that reaches
@@ -232,6 +234,7 @@ jobs:
             echo "arm=$arm"
             echo "macos=$macos"
             echo "package=$package"
+            echo "workflows=$workflows"
             echo "release=$release"
             echo "version=$version"
           } | tee -a "$GITHUB_OUTPUT"
@@ -318,6 +321,17 @@ jobs:
           else
             python3 scripts/changelog.py --lint
           fi
+
+  actionlint:
+    name: Actionlint
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The image bundles shellcheck, which checks the `run:` scripts.
+      - run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
 
   # Clippy and the tests on one runner, with one target directory and one
   # cache. Each check runs however the other went, so one push reports every
@@ -507,7 +521,7 @@ jobs:
     name: Checks
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, fmt, changelog, linux, msrv, build, build-arm, macos]
+    needs: [changes, fmt, changelog, actionlint, linux, msrv, build, build-arm, macos]
     if: always()
     steps:
       - env:
