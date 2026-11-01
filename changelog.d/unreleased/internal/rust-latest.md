@@ -1,0 +1,1 @@
+- **Builds use the latest stable Rust.** `rust-version` is removed from the manifests, so dependency resolution targets the toolchain in use instead of holding crates back for an old compiler; mise installs `rust` at `latest`; the MSRV CI job is removed, since there is no longer a minimum version to check.
