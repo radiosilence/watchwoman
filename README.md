@@ -6,7 +6,7 @@ Mercurial fsmonitor, git fsmonitor, Buck2, your shell scripts — keeps
 working, minus the RAM bloat and log spam.
 
 ```sh
-brew install radiosilence/watchwoman/watchwoman
+brew install radiosilence/tap/watchwoman
 ```
 
 ## Why replace watchman
@@ -78,7 +78,7 @@ Install paths all land the same six binaries on `$PATH`:
 mise use -g "github:radiosilence/watchwoman@latest"
 
 # Homebrew — macOS & Linux
-brew install radiosilence/watchwoman/watchwoman
+brew install radiosilence/tap/watchwoman
 
 # cargo — source build; always latest commit
 cargo install watchwoman

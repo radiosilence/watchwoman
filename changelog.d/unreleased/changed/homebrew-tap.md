@@ -1,0 +1,1 @@
+- **One Homebrew tap.** Install from `radiosilence/tap`, which holds every radiosilence formula and cask; `brew update` moves installs from the old per-project tap.

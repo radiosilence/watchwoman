@@ -690,7 +690,7 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: radiosilence/homebrew-watchwoman
+          repository: radiosilence/homebrew-tap
           token: ${{ secrets.RELEASE_TOKEN }}
           path: tap
 
