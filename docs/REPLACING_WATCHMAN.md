@@ -26,7 +26,7 @@ rm -rf "$TMPDIR"/*-state
 ### brew (recommended on macOS)
 
 ```sh
-brew install radiosilence/watchwoman/watchwoman
+brew install radiosilence/tap/watchwoman
 ```
 
 ### mise
