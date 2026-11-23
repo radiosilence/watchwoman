@@ -50,9 +50,12 @@ pub fn spawn(
     // thread and one leaked kernel watch per root.
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
     tokio::task::spawn_blocking(move || {
-        let mut watcher: RecommendedWatcher = match notify::recommended_watcher(move |res| {
-            let _ = event_tx.send(res);
-        }) {
+        let mut watcher: RecommendedWatcher = match RecommendedWatcher::new(
+            move |res| {
+                let _ = event_tx.send(res);
+            },
+            notify::Config::default().with_follow_symlinks(false),
+        ) {
             Ok(w) => w,
             Err(e) => {
                 tracing::warn!(?e, "failed to create watcher");
